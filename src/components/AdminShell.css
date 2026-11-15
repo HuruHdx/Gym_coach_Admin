@@ -1,0 +1,193 @@
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.app-shell > * {
+  min-height: 0;
+}
+
+.side {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
+  padding: var(--sp-5) var(--sp-3);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-2) var(--sp-6);
+  font-weight: var(--fw-strong);
+}
+
+.brand .mark {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  transform: skew(-7deg);
+}
+
+.brand small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-regular);
+  letter-spacing: 0.08em;
+}
+
+.nav-label {
+  padding: var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.nav {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.nav a {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-3);
+  color: var(--text-2);
+  text-decoration: none;
+}
+
+.nav a.on {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--text-1);
+}
+
+.side-status {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding: var(--sp-4) var(--sp-2) 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.side-status .ok {
+  color: var(--done);
+}
+
+.side-status .bad {
+  color: var(--danger);
+}
+
+.workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.top {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  min-height: 60px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 var(--sp-6);
+  background: var(--bg);
+}
+
+.global-search {
+  display: flex;
+  width: min(420px, 100%);
+  align-items: center;
+  gap: 10px;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.global-search .search-ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--text-2);
+}
+
+.global-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-1);
+}
+
+.operator {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.view-host {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  padding: var(--sp-6);
+  animation: enter var(--dur-move) var(--ease-out) both;
+}
+
+.view-host > * {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.view-host > .ex-list {
+  display: flex;
+  overflow: hidden;
+}
+
+.view-host > .ex-detail {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .nav a:hover {
+    background: var(--surface-2);
+  }
+  .avatar:hover {
+    opacity: 0.85;
+  }
+}

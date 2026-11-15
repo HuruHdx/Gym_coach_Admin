@@ -1,0 +1,368 @@
+.ex-list {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ex-list .head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  margin-bottom: var(--sp-5);
+}
+
+.ex-list .eyebrow {
+  margin-bottom: var(--sp-2);
+  color: var(--accent-text);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-strong);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ex-list h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: var(--fw-strong);
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.ex-list .sub {
+  margin-top: var(--sp-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.ex-list .create-btn {
+  min-height: 40px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  padding: 0 16px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-strong);
+  white-space: nowrap;
+}
+
+.ex-list .toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: var(--sp-3);
+}
+
+.ex-list .toolbar > .field,
+.ex-list .toolbar > .filter-select,
+.ex-list .toolbar > .chip {
+  height: 40px;
+  flex: 0 0 auto;
+}
+
+.ex-list .field {
+  display: inline-flex;
+  min-width: 148px;
+  height: 40px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0 12px;
+  color: var(--text-3);
+  box-sizing: border-box;
+}
+
+.ex-list .field.grow {
+  flex: 1 1 260px;
+  min-width: 240px;
+}
+
+.ex-list .search-ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--text-2);
+}
+
+.ex-list .field input,
+.ex-list .field select {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-1);
+  line-height: 1;
+}
+
+.ex-list .field select:disabled {
+  color: var(--text-3);
+}
+
+.ex-list .chip {
+  display: inline-flex;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: 0 14px;
+  background: var(--surface);
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.ex-list .chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.ex-list .panel {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.ex-list .table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.ex-list table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.ex-list th {
+  padding: 10px var(--sp-3);
+  color: var(--text-3);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ex-list td {
+  border-top: 1px solid var(--line);
+  padding: 10px var(--sp-3);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  vertical-align: middle;
+}
+
+.ex-list tbody tr {
+  cursor: pointer;
+}
+
+.ex-list .asset {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-1);
+}
+
+.ex-list .thumb {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+.ex-list .thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ex-list .asset small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: var(--fs-label);
+}
+
+.ex-list .class-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 280px;
+}
+
+.ex-list .tag {
+  display: inline-flex;
+  margin: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  font-size: var(--fs-label);
+}
+
+.ex-list .tag.accent {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.ex-list .risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.ex-list .risk::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  content: '';
+}
+
+.ex-list .risk.low::before {
+  background: var(--done);
+}
+
+.ex-list .risk.high::before {
+  background: var(--danger);
+}
+
+.ex-list .slots {
+  display: flex;
+  gap: 4px;
+}
+
+.ex-list .slots i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.ex-list .slots i.on {
+  background: var(--accent);
+}
+
+.ex-list .status {
+  display: inline-flex;
+  border-radius: var(--r-sm);
+  padding: 5px 7px;
+  background: var(--done-bg);
+  color: var(--done);
+  font-size: var(--fs-label);
+  white-space: nowrap;
+}
+
+.ex-list .status.wait {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ex-list .mark-btn {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 0 8px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-label);
+  white-space: nowrap;
+}
+
+.ex-list .mark-btn.on {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ex-list .pagination {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.ex-list .pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ex-list .pager button {
+  min-width: 30px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 0 8px;
+  background: var(--surface-2);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.ex-list .pager button.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.ex-list .pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ex-list .pager-ellipsis {
+  color: var(--text-3);
+}
+
+.ex-list .state {
+  padding: var(--sp-6);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.ex-list .state.error {
+  color: var(--danger);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ex-list tbody tr:hover {
+    background: var(--surface-2);
+  }
+}
