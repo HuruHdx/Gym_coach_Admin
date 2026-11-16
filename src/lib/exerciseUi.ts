@@ -47,6 +47,25 @@ export const ROLE_LABELS: Record<string, string> = {
 
 export const ROLE_KEYS = ['start', 'end', 'demo', 'highlight_video', 'tip'] as const
 
+/** 计划槽位角色（写 Exercise.slot_roles，勿与肌群 roles 混淆） */
+export const PLAN_SLOT_ROLES = [
+  { value: 'main', label: '主项' },
+  { value: 'assist', label: '辅助' },
+  { value: 'isolation', label: '孤立' },
+  { value: 'warmup', label: '热身' },
+] as const
+
+export const PLAN_GEAR_TAGS = [
+  '杠铃',
+  '哑铃',
+  '壶铃',
+  '绳索',
+  '史密斯',
+  '固定器械',
+  '自重',
+  '弹力带',
+] as const
+
 export const JOINT_LABELS: Record<string, string> = {
   waist: '腰',
   knee: '膝',

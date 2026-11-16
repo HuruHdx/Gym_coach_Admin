@@ -1,0 +1,361 @@
+.plan-detail {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  gap: var(--sp-4);
+  overflow: auto;
+  padding-bottom: var(--sp-6);
+}
+
+.plan-detail .topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.plan-detail .back {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.plan-detail h1 {
+  margin: 6px 0 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.plan-detail .sub {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.plan-detail .primary {
+  min-height: 40px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  padding: 0 16px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-weight: var(--fw-strong);
+}
+
+.plan-detail .state {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.plan-detail .state.error {
+  color: #ff8d7a;
+}
+
+.plan-detail .state.ok {
+  color: var(--accent-text);
+}
+
+.plan-detail .meta-panel {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--sp-4);
+}
+
+.plan-detail .cover-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-detail .cover-box img,
+.plan-detail .cover-empty {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--r-md);
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.plan-detail .cover-empty {
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.plan-detail .cover-box button,
+.plan-detail .panel-head button,
+.plan-detail .block-ops button,
+.plan-detail .exercise-panel button {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 6px 10px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.plan-detail .meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.plan-detail .meta-grid label,
+.plan-detail .block-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: var(--fs-label);
+}
+
+.plan-detail .meta-grid input,
+.plan-detail .meta-grid select,
+.plan-detail .meta-grid textarea,
+.plan-detail .block-edit input,
+.plan-detail .ex-table-wrap input,
+.plan-detail .ex-table-wrap select,
+.plan-detail .picker input {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.plan-detail .check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  margin-top: 18px;
+  color: var(--text-1) !important;
+}
+
+.plan-detail .span-all {
+  grid-column: 1 / -1;
+}
+
+.plan-detail .field-label {
+  margin-bottom: 6px;
+  color: var(--text-3);
+  font-size: var(--fs-label);
+}
+
+.plan-detail .chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plan-detail .chip-row button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 10px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.plan-detail .chip-row button.on {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-text);
+}
+
+.plan-detail .editor {
+  display: grid;
+  min-height: 420px;
+  grid-template-columns: 280px 1fr;
+  gap: var(--sp-4);
+}
+
+.plan-detail .blocks,
+.plan-detail .exercise-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--sp-3);
+}
+
+.plan-detail .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.plan-detail .panel-head h2 {
+  margin: 0;
+  font-size: var(--fs-title);
+}
+
+.plan-detail .blocks ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-detail .blocks li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 8px;
+}
+
+.plan-detail .blocks li.on {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.plan-detail .block-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plan-detail .block-main strong {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.plan-detail .block-main span {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.plan-detail .block-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-detail .danger {
+  color: #ff8d7a !important;
+}
+
+.plan-detail .block-edit {
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.plan-detail .ex-table-wrap {
+  overflow: auto;
+}
+
+.plan-detail table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.plan-detail th,
+.plan-detail td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.plan-detail th {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.plan-detail .tiny {
+  width: 64px;
+}
+
+.plan-detail .alts {
+  min-width: 120px;
+  width: 100%;
+}
+
+.plan-detail .ex-name {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.plan-detail .ex-name img,
+.plan-detail .ex-name .ph {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.plan-detail .link {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: var(--accent-text) !important;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.plan-detail .picker {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  padding: 8px;
+}
+
+.plan-detail .picker ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.plan-detail .picker li button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  border: 0;
+  background: transparent;
+  padding: 6px 4px;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+}
+
+.plan-detail .picker li button span {
+  color: var(--text-3);
+}
+
+@media (max-width: 1100px) {
+  .plan-detail .meta-panel,
+  .plan-detail .editor,
+  .plan-detail .meta-grid {
+    grid-template-columns: 1fr;
+  }
+}

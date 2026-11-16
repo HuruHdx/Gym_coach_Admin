@@ -106,6 +106,7 @@ export type ExerciseDetail = {
   gear: string
   modality: string
   roles: string[]
+  slot_roles: string[]
   coach_core: boolean
   needs_review: boolean
   is_valid_exercise: boolean
@@ -133,6 +134,7 @@ export type ExerciseUpdatePayload = {
   cues_zh?: string[]
   common_mistakes_zh?: string[]
   aliases?: string[]
+  slot_roles?: string[]
 }
 
 export type AiDraftResult = {
@@ -409,6 +411,207 @@ export function bindMediaPoolItem(
 export function ignoreMediaPoolItem(poolId: number) {
   return request<MediaPoolItem>(`/api/admin/media-pool/${poolId}/ignore`, {
     method: 'POST',
+  })
+}
+
+// ---------- 计划模板 ----------
+
+export type AdminPlanListItem = {
+  id: string
+  title: string
+  subtitle?: string | null
+  author?: string | null
+  badge_label?: string | null
+  template_type: 'framework' | 'fixed' | string
+  level?: string | null
+  days_per_week: number
+  minutes_min?: number | null
+  minutes_max?: number | null
+  minutes_label?: string | null
+  muscle_tags: string[]
+  split_summary?: string | null
+  gear_tags: string[]
+  description?: string | null
+  cover_url?: string | null
+  is_published: boolean
+  sort_order: number
+  block_count: number
+  updated_at?: string | null
+}
+
+export type AdminPlanExercise = {
+  id: number
+  block_id: number
+  order_index: number
+  exercise_id?: string | null
+  exercise_name?: string | null
+  role: string
+  lock_level: string
+  target_sets?: number | null
+  target_reps?: string | null
+  warmup_sets: number
+  alternatives: string[]
+  note?: string | null
+  thumb_url?: string | null
+  pending?: boolean
+}
+
+export type AdminPlanBlock = {
+  id: number
+  template_id: string
+  order_index: number
+  title: string
+  muscles: string[]
+  minutes_min?: number | null
+  minutes_max?: number | null
+  minutes_label?: string | null
+  cover_url?: string | null
+  note?: string | null
+  exercises: AdminPlanExercise[]
+}
+
+export type AdminPlanDetail = AdminPlanListItem & {
+  blocks: AdminPlanBlock[]
+}
+
+export type AdminPlanListResult = {
+  total: number
+  page: number
+  page_size: number
+  items: AdminPlanListItem[]
+}
+
+export type AdminPlanQuery = {
+  q?: string
+  type?: string
+  published?: boolean
+  page?: number
+  page_size?: number
+}
+
+export type AdminPlanPayload = {
+  id?: string
+  title?: string
+  subtitle?: string | null
+  author?: string | null
+  badge_label?: string | null
+  template_type?: string
+  level?: string | null
+  days_per_week?: number
+  minutes_min?: number | null
+  minutes_max?: number | null
+  muscle_tags?: string[]
+  split_summary?: string | null
+  gear_tags?: string[]
+  description?: string | null
+  cover_url?: string | null
+  is_published?: boolean
+  sort_order?: number
+}
+
+export type AdminPlanBlockPayload = {
+  title?: string
+  muscles?: string[]
+  minutes_min?: number | null
+  minutes_max?: number | null
+  cover_url?: string | null
+  note?: string | null
+  order_index?: number
+}
+
+export type AdminPlanExercisePayload = {
+  exercise_id?: string | null
+  exercise_name?: string | null
+  role?: string
+  lock_level?: string
+  target_sets?: number | null
+  target_reps?: string | null
+  warmup_sets?: number
+  alternatives?: string[]
+  note?: string | null
+  order_index?: number
+}
+
+export function fetchAdminPlans(query: AdminPlanQuery = {}) {
+  const params = new URLSearchParams()
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    params.set(key, String(value))
+  })
+  const qs = params.toString()
+  return request<AdminPlanListResult>(`/api/admin/plans${qs ? `?${qs}` : ''}`)
+}
+
+export function fetchAdminPlanDetail(id: string) {
+  return request<AdminPlanDetail>(`/api/admin/plans/${encodeURIComponent(id)}`)
+}
+
+export function createAdminPlan(payload: AdminPlanPayload) {
+  return request<AdminPlanDetail>('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateAdminPlan(id: string, payload: AdminPlanPayload) {
+  return request<AdminPlanDetail>(`/api/admin/plans/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteAdminPlan(id: string) {
+  return request<{ ok: boolean; id: string }>(`/api/admin/plans/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function uploadPlanCover(id: string, file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<AdminPlanDetail>(`/api/admin/plans/${encodeURIComponent(id)}/cover`, {
+    method: 'POST',
+    body,
+  })
+}
+
+export function createPlanBlock(planId: string, payload: AdminPlanBlockPayload) {
+  return request<AdminPlanBlock>(`/api/admin/plans/${encodeURIComponent(planId)}/blocks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updatePlanBlock(blockId: number, payload: AdminPlanBlockPayload) {
+  return request<AdminPlanBlock>(`/api/admin/plan-blocks/${blockId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deletePlanBlock(blockId: number) {
+  return request<{ ok: boolean; id: number }>(`/api/admin/plan-blocks/${blockId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function createPlanExercise(blockId: number, payload: AdminPlanExercisePayload) {
+  return request<AdminPlanExercise>(`/api/admin/plan-blocks/${blockId}/exercises`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updatePlanExercise(exId: number, payload: AdminPlanExercisePayload) {
+  return request<AdminPlanExercise>(`/api/admin/plan-exercises/${exId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deletePlanExercise(exId: number) {
+  return request<{ ok: boolean; id: number }>(`/api/admin/plan-exercises/${exId}`, {
+    method: 'DELETE',
   })
 }
 

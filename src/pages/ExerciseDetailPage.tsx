@@ -20,6 +20,7 @@ import {
   MODALITIES,
   MOVEMENT_PATTERNS,
   MUSCLES,
+  PLAN_SLOT_ROLES,
   ROLE_LABELS,
   SUB_REGIONS,
   parseSubRegions,
@@ -37,6 +38,7 @@ type FormState = {
   modality: string
   coach_core: boolean
   needs_review: boolean
+  slot_roles: string[]
   instructions: string[]
   cues: string
   mistakes: string
@@ -56,6 +58,7 @@ function toForm(data: ExerciseDetail): FormState {
     modality: data.modality || '',
     coach_core: !!data.coach_core,
     needs_review: !!data.needs_review,
+    slot_roles: [...(data.slot_roles || [])],
     instructions: [...(data.instructions_zh || []), '', '', '', ''].slice(0, 4),
     cues: (data.cues_zh || []).join('\n'),
     mistakes: (data.common_mistakes_zh || []).join('\n'),
@@ -155,6 +158,7 @@ export function ExerciseDetailPage() {
         modality: form.modality,
         coach_core: form.coach_core,
         needs_review: false,
+        slot_roles: form.slot_roles,
         instructions_zh: form.instructions.map((s) => s.trim()).filter(Boolean),
         cues_zh: lines(form.cues),
         common_mistakes_zh: lines(form.mistakes),
@@ -520,6 +524,32 @@ export function ExerciseDetailPage() {
                   <option value="1">是 · 主力</option>
                   <option value="0">否 · 普通入库</option>
                 </select>
+              </div>
+              <div className="form-control span-2">
+                <label>计划槽位角色（slot_roles）</label>
+                <div className="chip-row">
+                  {PLAN_SLOT_ROLES.map((role) => {
+                    const on = form.slot_roles.includes(role.value)
+                    return (
+                      <button
+                        key={role.value}
+                        type="button"
+                        className={`chip-toggle ${on ? 'on' : ''}`}
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            slot_roles: on
+                              ? form.slot_roles.filter((x) => x !== role.value)
+                              : [...form.slot_roles, role.value],
+                          })
+                        }
+                      >
+                        {role.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <span className="field-hint">供框架计划按主项/辅助/孤立/热身检索，不改肌群 roles</span>
               </div>
               <div className="form-control">
                 <label>部位</label>

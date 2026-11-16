@@ -1,0 +1,244 @@
+.plans-page {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.plans-page .head {
+  flex: 0 0 auto;
+  margin-bottom: var(--sp-4);
+}
+
+.plans-page .eyebrow {
+  margin-bottom: var(--sp-2);
+  color: var(--accent-text);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-strong);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.plans-page h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: var(--fw-strong);
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.plans-page .sub {
+  margin-top: var(--sp-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.plans-page .create-bar,
+.plans-page .toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: var(--sp-3);
+}
+
+.plans-page .create-bar input,
+.plans-page .create-bar select,
+.plans-page .toolbar input,
+.plans-page .toolbar select,
+.plans-page .search {
+  height: 40px;
+}
+
+.plans-page .create-bar input,
+.plans-page .toolbar input {
+  min-width: 220px;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0 12px;
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+.plans-page .create-bar select,
+.plans-page .toolbar select {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0 10px;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.plans-page .primary {
+  min-height: 40px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  padding: 0 16px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-weight: var(--fw-strong);
+}
+
+.plans-page .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plans-page .search {
+  display: flex;
+  flex: 1;
+  min-width: 200px;
+}
+
+.plans-page .search input {
+  width: 100%;
+}
+
+.plans-page .state {
+  margin-bottom: var(--sp-3);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.plans-page .state.error {
+  color: #ff8d7a;
+}
+
+.plans-page .meta-line {
+  margin-bottom: var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.plans-page .table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.plans-page table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-body);
+}
+
+.plans-page th,
+.plans-page td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.plans-page th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-strong);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plans-page .linkish {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plans-page .linkish strong {
+  color: var(--text-1);
+}
+
+.plans-page .linkish span {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.plans-page .tag {
+  display: inline-flex;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-strong);
+}
+
+.plans-page .tag.framework {
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.plans-page .tag.fixed {
+  color: var(--text-1);
+}
+
+.plans-page .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plans-page .chips span {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.plans-page .pub {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 10px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.plans-page .pub.on {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-text);
+}
+
+.plans-page .row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.plans-page .row-actions button {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 4px 8px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.plans-page .row-actions .danger {
+  color: #ff8d7a;
+}
+
+.plans-page .empty {
+  color: var(--text-3);
+  text-align: center;
+}
