@@ -9,7 +9,7 @@ const NAV = [
   { to: '/exercises', label: '动作 SKU' },
   { to: '/plans', label: '计划模板' },
   { to: '/media-pool', label: '媒体池' },
-  { to: '/video-studio', label: '高光切片台' },
+  { to: '/studio', label: '内容工坊' },
   { to: '/ai-ops', label: 'AI Ops' },
 ]
 

@@ -171,6 +171,12 @@
   font-size: var(--fs-meta);
 }
 
+.plans-page .scene-tag {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
 .plans-page .tag {
   display: inline-flex;
   border-radius: var(--r-sm);

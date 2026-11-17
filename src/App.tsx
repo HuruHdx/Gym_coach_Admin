@@ -9,6 +9,7 @@ import { MediaPoolPage } from './pages/MediaPoolPage'
 import { PlanDetailPage } from './pages/PlanDetailPage'
 import { PlansPage } from './pages/PlansPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { StudioPage } from './pages/StudioPage'
 
 function RequireAuth() {
   if (!isAuthed()) {
@@ -30,16 +31,8 @@ export default function App() {
           <Route path="/media-pool" element={<MediaPoolPage />} />
           <Route path="/plans" element={<PlansPage />} />
           <Route path="/plans/:id" element={<PlanDetailPage />} />
-          <Route
-            path="/video-studio"
-            element={
-              <PlaceholderPage
-                eyebrow="Video Intelligence"
-                title="高光切片工作台"
-                note="A4：本地视频 → 字幕 → 高光切片。"
-              />
-            }
-          />
+          <Route path="/studio" element={<StudioPage />} />
+          <Route path="/video-studio" element={<Navigate to="/studio" replace />} />
           <Route
             path="/ai-ops"
             element={

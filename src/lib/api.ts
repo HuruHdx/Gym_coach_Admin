@@ -433,6 +433,8 @@ export type AdminPlanListItem = {
   gear_tags: string[]
   description?: string | null
   cover_url?: string | null
+  /** 场景标签：三分化 / 四分化 / 博主同款…（与 H5 列表筛对齐） */
+  scene_tag?: string | null
   is_published: boolean
   sort_order: number
   block_count: number
@@ -447,6 +449,8 @@ export type AdminPlanExercise = {
   exercise_name?: string | null
   role: string
   lock_level: string
+  /** 单行目标肌群：胸/背/肩/腿/臂/核心 */
+  target_muscle?: string | null
   target_sets?: number | null
   target_reps?: string | null
   warmup_sets: number
@@ -505,6 +509,7 @@ export type AdminPlanPayload = {
   gear_tags?: string[]
   description?: string | null
   cover_url?: string | null
+  scene_tag?: string | null
   is_published?: boolean
   sort_order?: number
 }
@@ -524,6 +529,7 @@ export type AdminPlanExercisePayload = {
   exercise_name?: string | null
   role?: string
   lock_level?: string
+  target_muscle?: string | null
   target_sets?: number | null
   target_reps?: string | null
   warmup_sets?: number
@@ -575,6 +581,15 @@ export function uploadPlanCover(id: string, file: File) {
   })
 }
 
+export function uploadPlanBlockCover(blockId: number, file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<AdminPlanBlock>(`/api/admin/plan-blocks/${blockId}/cover`, {
+    method: 'POST',
+    body,
+  })
+}
+
 export function createPlanBlock(planId: string, payload: AdminPlanBlockPayload) {
   return request<AdminPlanBlock>(`/api/admin/plans/${encodeURIComponent(planId)}/blocks`, {
     method: 'POST',
@@ -612,6 +627,185 @@ export function updatePlanExercise(exId: number, payload: AdminPlanExercisePaylo
 export function deletePlanExercise(exId: number) {
   return request<{ ok: boolean; id: number }>(`/api/admin/plan-exercises/${exId}`, {
     method: 'DELETE',
+  })
+}
+
+/* ---------- 内容工坊 Studio ---------- */
+
+export type StudioExerciseDraft = {
+  id: string
+  spoken_name: string
+  exercise_id?: string | null
+  exercise_name?: string | null
+  target_muscle?: string | null
+  role?: string
+  target_sets?: number | null
+  target_reps?: string | null
+  sets_from_transcript?: boolean
+  source_kind?: string
+  match_confidence?: number
+  snippet?: { start?: number; end?: number }
+  traffic?: 'red' | 'amber' | 'green' | string
+  replace_demo?: boolean
+  attach_demo?: boolean
+}
+
+export type StudioBlockDraft = {
+  title: string
+  muscles: string[]
+  exercises: StudioExerciseDraft[]
+}
+
+export type StudioDraft = {
+  plan_title?: string
+  scene_tag?: string | null
+  cover_url?: string | null
+  mode?: string
+  blocks: StudioBlockDraft[]
+}
+
+export type StudioTask = {
+  id: number
+  batch_id?: string | null
+  batch_order: number
+  source_type: string
+  source_text?: string | null
+  source_url?: string | null
+  stored_path?: string | null
+  play_url?: string | null
+  mode: string
+  status: string
+  progress: number
+  transcript_json: {
+    engine?: string
+    warning?: string
+    text?: string
+    segments?: Array<{ start: number; end: number; text: string }>
+  }
+  draft_json: StudioDraft | Record<string, unknown>
+  score: { red_count?: number; amber_count?: number; green_count?: number; total?: number }
+  review_state: string
+  result_ref: Record<string, unknown>
+  error?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export function fetchStudioTasks(limit = 50) {
+  return request<{ items: StudioTask[]; total: number }>(`/api/admin/studio/tasks?limit=${limit}`)
+}
+
+export function fetchStudioTask(id: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${id}`)
+}
+
+export function saveStudioCookies(payload: {
+  bilibili?: string
+  douyin?: string
+  youtube?: string
+}) {
+  return request<{ ok: boolean }>('/api/admin/studio/cookies', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchStudioCookies() {
+  return request<{
+    bilibili?: string
+    douyin?: string
+    youtube?: string
+    bilibili_set?: boolean
+    douyin_set?: boolean
+    youtube_set?: boolean
+    updated_at?: string | null
+  }>('/api/admin/studio/cookies')
+}
+
+export async function ingestStudioBatch(opts: {
+  text?: string
+  mode?: string
+  merge_into_one_plan?: boolean
+  plan_title?: string
+  files?: File[]
+}) {
+  const body = new FormData()
+  if (opts.text) body.append('text', opts.text)
+  body.append('mode', opts.mode || 'plan_single')
+  body.append('merge_into_one_plan', String(Boolean(opts.merge_into_one_plan)))
+  if (opts.plan_title) body.append('plan_title', opts.plan_title)
+  for (const f of opts.files || []) body.append('files', f)
+  return request<{ batch_id: string | null; items: StudioTask[] }>(
+    '/api/admin/studio/ingest-batch',
+    { method: 'POST', body },
+  )
+}
+
+export async function uploadStudioFallback(taskId: number, file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/upload-fallback`, {
+    method: 'POST',
+    body,
+  })
+}
+
+export function saveStudioDraft(taskId: number, draft: StudioDraft) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/draft`, {
+    method: 'PUT',
+    body: JSON.stringify({ draft }),
+  })
+}
+
+export function uploadStudioTaskCover(taskId: number, file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/cover`, {
+    method: 'POST',
+    body,
+  })
+}
+
+export function previewStudioClip(taskId: number, start: number, end: number) {
+  return request<{ demo_url: string; cover_url: string; start: number; end: number }>(
+    '/api/admin/studio/preview-clip',
+    {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, start, end }),
+    },
+  )
+}
+
+export function quickCreateStudioExercise(payload: {
+  task_id: number
+  spoken_name: string
+  muscle: string
+  gear?: string
+  role?: string
+  start?: number | null
+  end?: number | null
+  attach_demo?: boolean
+}) {
+  return request<{ exercise: { id: string; name_zh: string }; demo: unknown }>(
+    '/api/admin/studio/quick-create-exercise',
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+export function confirmStudioPlan(payload: {
+  task_id: number
+  draft?: StudioDraft
+  append_to_plan_id?: string | null
+  publish?: boolean
+}) {
+  return request<{
+    ok: boolean
+    plan_id: string | null
+    block_ids: number[]
+    attached?: number
+  }>('/api/admin/studio/confirm-plan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

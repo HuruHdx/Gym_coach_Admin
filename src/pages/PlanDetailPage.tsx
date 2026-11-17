@@ -11,6 +11,7 @@ import {
   updateAdminPlan,
   updatePlanBlock,
   updatePlanExercise,
+  uploadPlanBlockCover,
   uploadPlanCover,
   type AdminPlanBlock,
   type AdminPlanDetail,
@@ -20,12 +21,24 @@ import {
 import { MUSCLES, PLAN_GEAR_TAGS, PLAN_SLOT_ROLES } from '../lib/exerciseUi'
 import './PlanDetailPage.css'
 
+const SCENE_TAGS = [
+  '三分化',
+  '四分化',
+  '五分化',
+  '博主同款',
+  '单部位专项',
+  '新手入门',
+] as const
+
+const TARGET_MUSCLES = ['胸', '背', '肩', '腿', '臂', '核心'] as const
+
 type MetaForm = {
   title: string
   subtitle: string
   author: string
   badge_label: string
   template_type: string
+  scene_tag: string
   level: string
   days_per_week: number
   minutes_min: string
@@ -45,6 +58,7 @@ function toMeta(plan: AdminPlanDetail): MetaForm {
     author: plan.author || '',
     badge_label: plan.badge_label || '',
     template_type: plan.template_type || 'framework',
+    scene_tag: plan.scene_tag || '',
     level: plan.level || '',
     days_per_week: plan.days_per_week || 3,
     minutes_min: plan.minutes_min != null ? String(plan.minutes_min) : '',
@@ -58,6 +72,11 @@ function toMeta(plan: AdminPlanDetail): MetaForm {
   }
 }
 
+function looksLikeImageUrl(raw: string) {
+  const v = raw.trim()
+  return /^https?:\/\//i.test(v)
+}
+
 function toggleTag(list: string[], tag: string) {
   return list.includes(tag) ? list.filter((x) => x !== tag) : [...list, tag]
 }
@@ -66,6 +85,7 @@ export function PlanDetailPage() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
   const coverRef = useRef<HTMLInputElement>(null)
+  const blockCoverRef = useRef<HTMLInputElement>(null)
   const [plan, setPlan] = useState<AdminPlanDetail | null>(null)
   const [meta, setMeta] = useState<MetaForm | null>(null)
   const [activeBlockId, setActiveBlockId] = useState<number | null>(null)
@@ -73,6 +93,8 @@ export function PlanDetailPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [saving, setSaving] = useState(false)
+  const [coverUrlDraft, setCoverUrlDraft] = useState('')
+  const [blockCoverUrlDraft, setBlockCoverUrlDraft] = useState('')
   const [pickerQ, setPickerQ] = useState('')
   const [pickerHits, setPickerHits] = useState<ExerciseListItem[]>([])
   const [pickerForExId, setPickerForExId] = useState<number | null>(null)
@@ -81,16 +103,19 @@ export function PlanDetailPage() {
     const detail = await fetchAdminPlanDetail(id)
     setPlan(detail)
     setMeta(toMeta(detail))
+    setCoverUrlDraft(detail.cover_url || '')
     const nextId =
       selectBlockId ??
       activeBlockId ??
       detail.blocks[0]?.id ??
       null
-    setActiveBlockId(
+    const resolved =
       nextId && detail.blocks.some((b) => b.id === nextId)
         ? nextId
-        : detail.blocks[0]?.id ?? null,
-    )
+        : detail.blocks[0]?.id ?? null
+    setActiveBlockId(resolved)
+    const block = detail.blocks.find((b) => b.id === resolved)
+    setBlockCoverUrlDraft(block?.cover_url || '')
     return detail
   }
 
@@ -103,7 +128,10 @@ export function PlanDetailPage() {
         if (!alive) return
         setPlan(detail)
         setMeta(toMeta(detail))
-        setActiveBlockId(detail.blocks[0]?.id ?? null)
+        setCoverUrlDraft(detail.cover_url || '')
+        const firstId = detail.blocks[0]?.id ?? null
+        setActiveBlockId(firstId)
+        setBlockCoverUrlDraft(detail.blocks[0]?.cover_url || '')
       })
       .catch((err: unknown) => {
         if (alive) setError(err instanceof Error ? err.message : '加载失败')
@@ -120,6 +148,10 @@ export function PlanDetailPage() {
     if (!plan || activeBlockId == null) return null
     return plan.blocks.find((b) => b.id === activeBlockId) || null
   }, [plan, activeBlockId])
+
+  useEffect(() => {
+    setBlockCoverUrlDraft(activeBlock?.cover_url || '')
+  }, [activeBlock?.id, activeBlock?.cover_url])
 
   useEffect(() => {
     if (!pickerQ.trim()) {
@@ -162,6 +194,7 @@ export function PlanDetailPage() {
         split_summary: meta.split_summary.trim() || null,
         gear_tags: meta.gear_tags,
         description: meta.description.trim() || null,
+        scene_tag: meta.scene_tag.trim() || null,
         is_published: meta.is_published,
         sort_order: meta.sort_order,
       })
@@ -187,6 +220,62 @@ export function PlanDetailPage() {
     } finally {
       setSaving(false)
       if (coverRef.current) coverRef.current.value = ''
+    }
+  }
+
+  async function savePlanCoverUrl() {
+    if (!plan) return
+    const url = coverUrlDraft.trim()
+    if (url && !looksLikeImageUrl(url)) {
+      setError('封面外链需以 http:// 或 https:// 开头')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await updateAdminPlan(plan.id, { cover_url: url || null })
+      await reload(activeBlockId)
+      setNotice(url ? '封面外链已保存' : '已清空封面外链')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '保存封面外链失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function onUploadBlockCover(file: File | null) {
+    if (!file || !activeBlock) return
+    setSaving(true)
+    setError('')
+    try {
+      await uploadPlanBlockCover(activeBlock.id, file)
+      await reload(activeBlock.id)
+      setNotice('板块背景图已更新')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '板块封面上传失败')
+    } finally {
+      setSaving(false)
+      if (blockCoverRef.current) blockCoverRef.current.value = ''
+    }
+  }
+
+  async function saveBlockCoverUrl() {
+    if (!activeBlock) return
+    const url = blockCoverUrlDraft.trim()
+    if (url && !looksLikeImageUrl(url)) {
+      setError('板块外链需以 http:// 或 https:// 开头')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await updatePlanBlock(activeBlock.id, { cover_url: url || null })
+      await reload(activeBlock.id)
+      setNotice(url ? '板块背景外链已保存' : '已清空板块背景')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '保存板块外链失败')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -217,6 +306,7 @@ export function PlanDetailPage() {
         muscles: patch.muscles ?? activeBlock.muscles,
         minutes_min: patch.minutes_min ?? activeBlock.minutes_min,
         minutes_max: patch.minutes_max ?? activeBlock.minutes_max,
+        cover_url: patch.cover_url !== undefined ? patch.cover_url : activeBlock.cover_url,
         note: patch.note ?? activeBlock.note,
         order_index: patch.order_index ?? activeBlock.order_index,
       })
@@ -354,7 +444,7 @@ export function PlanDetailPage() {
       <section className="meta-panel">
         <div className="cover-box">
           {cover ? <img src={cover} alt="" /> : <div className="cover-empty">无封面</div>}
-          <button type="button" onClick={() => coverRef.current?.click()}>
+          <button type="button" onClick={() => coverRef.current?.click()} disabled={saving}>
             上传横向封面
           </button>
           <input
@@ -364,6 +454,19 @@ export function PlanDetailPage() {
             accept="image/*"
             onChange={(e) => void onUploadCover(e.target.files?.[0] || null)}
           />
+          <label className="cover-url">
+            或粘贴图片外链
+            <div className="cover-url-row">
+              <input
+                value={coverUrlDraft}
+                placeholder="https://cdn.xxx.com/cover.jpg"
+                onChange={(e) => setCoverUrlDraft(e.target.value)}
+              />
+              <button type="button" disabled={saving} onClick={() => void savePlanCoverUrl()}>
+                保存外链
+              </button>
+            </div>
+          </label>
         </div>
 
         <div className="meta-grid">
@@ -397,6 +500,20 @@ export function PlanDetailPage() {
             >
               <option value="framework">框架型</option>
               <option value="fixed">成品型</option>
+            </select>
+          </label>
+          <label>
+            场景标签
+            <select
+              value={meta.scene_tag}
+              onChange={(e) => setMeta({ ...meta, scene_tag: e.target.value })}
+            >
+              <option value="">未设（H5 可兜底派生）</option>
+              {SCENE_TAGS.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -515,6 +632,7 @@ export function PlanDetailPage() {
                   <strong>{block.title}</strong>
                   <span>
                     {(block.muscles || []).join(' · ') || '未设部位'} · {block.exercises.length} 行
+                    {block.cover_url ? ' · 有背景图' : ''}
                   </span>
                 </button>
                 <div className="block-ops">
@@ -588,6 +706,54 @@ export function PlanDetailPage() {
                     )
                   })}
                 </div>
+
+                <div className="block-cover">
+                  <div className="field-label">板块背景图（H5 板块卡暗角底图）</div>
+                  <div className="block-cover-preview">
+                    {activeBlock.cover_url ? (
+                      <img src={mediaSrc(activeBlock.cover_url) || ''} alt="" />
+                    ) : (
+                      <div className="cover-empty">无背景图</div>
+                    )}
+                  </div>
+                  <div className="cover-url-row">
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => blockCoverRef.current?.click()}
+                    >
+                      上传板块图
+                    </button>
+                    <input
+                      ref={blockCoverRef}
+                      type="file"
+                      hidden
+                      accept="image/*"
+                      onChange={(e) => void onUploadBlockCover(e.target.files?.[0] || null)}
+                    />
+                    <input
+                      value={blockCoverUrlDraft}
+                      placeholder="或粘贴 https://… 外链"
+                      onChange={(e) => setBlockCoverUrlDraft(e.target.value)}
+                    />
+                    <button type="button" disabled={saving} onClick={() => void saveBlockCoverUrl()}>
+                      保存外链
+                    </button>
+                    {activeBlock.cover_url ? (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={saving}
+                        onClick={() => {
+                          setBlockCoverUrlDraft('')
+                          void saveBlock({ cover_url: null }).then(() => setNotice('已清除板块背景'))
+                        }}
+                      >
+                        清除
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               </div>
 
               <div className="panel-head">
@@ -602,6 +768,7 @@ export function PlanDetailPage() {
                   <thead>
                     <tr>
                       <th>动作</th>
+                      <th>目标肌</th>
                       <th>角色</th>
                       <th>锁定</th>
                       <th>组</th>
@@ -670,6 +837,23 @@ export function PlanDetailPage() {
                               ) : null}
                             </div>
                           </div>
+                        </td>
+                        <td>
+                          <select
+                            value={ex.target_muscle || ''}
+                            onChange={(e) =>
+                              void patchExercise(ex, {
+                                target_muscle: e.target.value || null,
+                              })
+                            }
+                          >
+                            <option value="">未设</option>
+                            {TARGET_MUSCLES.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         <td>
                           <select

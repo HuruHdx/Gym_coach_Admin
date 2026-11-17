@@ -79,7 +79,9 @@
 }
 
 .plan-detail .cover-box img,
-.plan-detail .cover-empty {
+.plan-detail .cover-empty,
+.plan-detail .block-cover-preview img,
+.plan-detail .block-cover-preview .cover-empty {
   width: 100%;
   aspect-ratio: 16 / 10;
   border-radius: var(--r-md);
@@ -92,6 +94,43 @@
   place-items: center;
   color: var(--text-3);
   font-size: var(--fs-meta);
+}
+
+.plan-detail .cover-url {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: var(--fs-label);
+}
+
+.plan-detail .cover-url-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.plan-detail .cover-url-row input {
+  flex: 1 1 160px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.plan-detail .block-cover {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.plan-detail .block-cover-preview {
+  max-width: 280px;
+  margin-bottom: 8px;
 }
 
 .plan-detail .cover-box button,

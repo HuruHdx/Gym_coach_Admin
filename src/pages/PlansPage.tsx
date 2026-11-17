@@ -228,6 +228,9 @@ export function PlansPage() {
                 </td>
                 <td>
                   <span className={`tag ${item.template_type}`}>{typeLabel(item.template_type)}</span>
+                  {item.scene_tag ? (
+                    <div className="scene-tag">{item.scene_tag}</div>
+                  ) : null}
                 </td>
                 <td className="num">
                   每周 {item.days_per_week} · {item.minutes_label || '—'} · {item.block_count} 板块
