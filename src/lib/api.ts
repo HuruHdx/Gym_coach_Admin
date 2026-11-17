@@ -700,11 +700,13 @@ export function fetchStudioTask(id: number) {
 }
 
 export function saveStudioCookies(payload: {
+  source?: 'paste' | 'browser'
+  browser?: string
   bilibili?: string
   douyin?: string
   youtube?: string
 }) {
-  return request<{ ok: boolean }>('/api/admin/studio/cookies', {
+  return request<{ ok: boolean; source?: string; browser?: string }>('/api/admin/studio/cookies', {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
@@ -712,6 +714,8 @@ export function saveStudioCookies(payload: {
 
 export function fetchStudioCookies() {
   return request<{
+    source?: 'paste' | 'browser'
+    browser?: string
     bilibili?: string
     douyin?: string
     youtube?: string
@@ -747,6 +751,19 @@ export async function uploadStudioFallback(taskId: number, file: File) {
   return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/upload-fallback`, {
     method: 'POST',
     body,
+  })
+}
+
+export function retryStudioDownload(taskId: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/retry-download`, {
+    method: 'POST',
+  })
+}
+
+export function replaceStudioSource(taskId: number, text: string) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/replace-source`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
   })
 }
 

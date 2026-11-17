@@ -10,6 +10,8 @@ import {
   mediaSrc,
   previewStudioClip,
   quickCreateStudioExercise,
+  replaceStudioSource,
+  retryStudioDownload,
   saveStudioCookies,
   saveStudioDraft,
   uploadStudioFallback,
@@ -67,7 +69,15 @@ export function StudioPage() {
   const [busy, setBusy] = useState(false)
   const [showIngest, setShowIngest] = useState(false)
   const [showCookies, setShowCookies] = useState(false)
-  const [cookies, setCookies] = useState({ bilibili: '', douyin: '', youtube: '' })
+  const [showRelink, setShowRelink] = useState(false)
+  const [relinkText, setRelinkText] = useState('')
+  const [cookies, setCookies] = useState({
+    source: 'browser' as 'paste' | 'browser',
+    browser: 'chrome',
+    bilibili: '',
+    douyin: '',
+    youtube: '',
+  })
   const [clipStart, setClipStart] = useState(0)
   const [clipEnd, setClipEnd] = useState(5)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -113,7 +123,7 @@ export function StudioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 轮询进行中任务
+  // 轮询进行中任务：刷新列表 + 当前任务详情（避免中栏进度卡死）
   useEffect(() => {
     const ticking = tasks.some((t) =>
       ['queued', 'downloading', 'transcribing', 'parsing'].includes(t.status),
@@ -121,12 +131,14 @@ export function StudioPage() {
     if (!ticking) return
     const timer = window.setInterval(() => {
       void reloadList().then((items) => {
-        if (activeId != null) {
-          const hit = items.find((t) => t.id === activeId)
-          if (hit && hit.status === 'done') void selectTask(activeId)
+        if (activeId == null) return
+        const hit = items.find((t) => t.id === activeId)
+        if (!hit) return
+        if (['queued', 'downloading', 'transcribing', 'parsing', 'done', 'needs_manual_upload', 'failed'].includes(hit.status)) {
+          void selectTask(activeId)
         }
       })
-    }, 2500)
+    }, 2000)
     return () => window.clearInterval(timer)
   }, [tasks, activeId, reloadList, selectTask])
 
@@ -252,6 +264,40 @@ export function StudioPage() {
     } finally {
       setBusy(false)
       if (fallbackRef.current) fallbackRef.current.value = ''
+    }
+  }
+
+  async function onRetryDownload() {
+    if (activeId == null) return
+    setBusy(true)
+    setError(null)
+    try {
+      await retryStudioDownload(activeId)
+      await reloadList()
+      await selectTask(activeId)
+      setNotice('已重新排队下载（请确认已保存平台 Cookie）')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '重新下载失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onReplaceSource() {
+    if (activeId == null || !relinkText.trim()) return
+    setBusy(true)
+    setError(null)
+    try {
+      await replaceStudioSource(activeId, relinkText.trim())
+      setShowRelink(false)
+      setRelinkText('')
+      await reloadList()
+      await selectTask(activeId)
+      setNotice('已更换链接并重新排队下载')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '更换链接失败')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -438,6 +484,8 @@ export function StudioPage() {
     try {
       const data = await fetchStudioCookies()
       setCookies({
+        source: data.source === 'paste' ? 'paste' : 'browser',
+        browser: data.browser || 'chrome',
         bilibili: data.bilibili || '',
         douyin: data.douyin || '',
         youtube: data.youtube || '',
@@ -511,12 +559,38 @@ export function StudioPage() {
             <div className="empty">选择左侧任务</div>
           ) : (
             <>
-              {task.status === 'needs_manual_upload' ? (
+              {task.status === 'needs_manual_upload' ||
+              task.status === 'failed' ||
+              task.status === 'downloading' ||
+              task.status === 'done' ? (
                 <div className="fallback">
-                  <p>下载失败或需人工补传：{task.error}</p>
-                  <button type="button" onClick={() => fallbackRef.current?.click()}>
-                    补传本地 MP4
-                  </button>
+                  <p>
+                    {task.status === 'downloading'
+                      ? '下载时间过长时可中断重试 / 更换链接（抖音建议用浏览器 Cookie）。'
+                      : task.status === 'done'
+                        ? '可更换源链接或补传本地视频后重新解析。'
+                        : `下载失败或需人工补传：${task.error || ''}`}
+                  </p>
+                  <div className="fallback-actions">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setRelinkText(task.source_url || task.source_text || '')
+                        setShowRelink(true)
+                      }}
+                    >
+                      更换链接
+                    </button>
+                    {task.source_url ? (
+                      <button type="button" disabled={busy} onClick={() => void onRetryDownload()}>
+                        重新下载
+                      </button>
+                    ) : null}
+                    <button type="button" disabled={busy} onClick={() => fallbackRef.current?.click()}>
+                      补传/重选本地 MP4
+                    </button>
+                  </div>
                   <input
                     ref={fallbackRef}
                     type="file"
@@ -524,6 +598,27 @@ export function StudioPage() {
                     accept="video/*"
                     onChange={(e) => void onFallback(e.target.files?.[0] || null)}
                   />
+                </div>
+              ) : null}
+
+              {['queued', 'downloading', 'transcribing', 'parsing'].includes(task.status) ? (
+                <div className="pipeline-progress" aria-live="polite">
+                  <div className="pipeline-progress-meta">
+                    <strong>{statusLabel(task.status)}</strong>
+                    <span className="num">{task.progress}%</span>
+                  </div>
+                  <div className="pipeline-progress-track">
+                    <i style={{ width: `${Math.max(4, Math.min(100, task.progress || 0))}%` }} />
+                  </div>
+                  <p className="hint">
+                    {task.status === 'downloading'
+                      ? '正在拉视频（抖音可能较慢；卡住可点更换链接 / 补传 MP4）'
+                      : task.status === 'transcribing'
+                        ? '转字幕中（未装 faster-whisper 会跳过）'
+                        : task.status === 'parsing'
+                          ? '拆计划 / 打分中…'
+                          : '排队等待处理…'}
+                  </p>
                 </div>
               ) : null}
 
@@ -841,21 +936,101 @@ export function StudioPage() {
         </div>
       ) : null}
 
+      {showRelink ? (
+        <div className="modal-mask">
+          <div className="modal">
+            <h2>更换源链接</h2>
+            <p className="hint">
+              可贴抖音分享口令、短链，或网页地址栏（含 modal_id 的用户页弹窗链会自动转成
+              /video/ID）。
+            </p>
+            <textarea
+              rows={5}
+              placeholder="粘贴新链接或分享口令…"
+              value={relinkText}
+              onChange={(e) => setRelinkText(e.target.value)}
+            />
+            <div className="footer-actions">
+              <button type="button" onClick={() => setShowRelink(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !relinkText.trim()}
+                onClick={() => void onReplaceSource()}
+              >
+                确认更换并下载
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showCookies ? (
         <div className="modal-mask">
           <div className="modal">
             <h2>平台 Cookie</h2>
-            <p className="hint">存本机 api/data/studio_cookies.json，不进 Git。用于 yt-dlp 拉高清。</p>
-            {(['douyin', 'bilibili', 'youtube'] as const).map((k) => (
-              <label key={k} className="field">
-                {k}
-                <textarea
-                  rows={3}
-                  value={cookies[k]}
-                  onChange={(e) => setCookies({ ...cookies, [k]: e.target.value })}
+            <p className="hint">
+              抖音常拒纯 Cookie 头（403）。本机优先用浏览器直读；远程机用扩展导出 Netscape cookies.txt
+              粘贴。配置存 api/data/studio_cookies.json，不进 Git。
+            </p>
+            <div className="cookie-source">
+              <label>
+                <input
+                  type="radio"
+                  name="cookie-source"
+                  checked={cookies.source === 'browser'}
+                  onChange={() => setCookies({ ...cookies, source: 'browser' })}
                 />
+                从本机浏览器读取（推荐）
               </label>
-            ))}
+              <label>
+                <input
+                  type="radio"
+                  name="cookie-source"
+                  checked={cookies.source === 'paste'}
+                  onChange={() => setCookies({ ...cookies, source: 'paste' })}
+                />
+                粘贴 Cookie / cookies.txt
+              </label>
+            </div>
+            {cookies.source === 'browser' ? (
+              <label className="field">
+                浏览器
+                <select
+                  value={cookies.browser}
+                  onChange={(e) => setCookies({ ...cookies, browser: e.target.value })}
+                >
+                  <option value="chrome">Chrome</option>
+                  <option value="edge">Edge</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="brave">Brave</option>
+                  <option value="chromium">Chromium</option>
+                </select>
+                <span className="hint">
+                  先在该浏览器打开并登录 www.douyin.com；若报无法复制 Cookie
+                  库，请先完全退出浏览器再点「重新下载」。
+                </span>
+              </label>
+            ) : (
+              <>
+                <p className="hint">
+                  推荐扩展「Get cookies.txt LOCALLY」在抖音页导出后整段粘贴（Netscape
+                  七列）。仅贴 `a=1; b=2` 头在抖音上经常仍会 403。
+                </p>
+                {(['douyin', 'bilibili', 'youtube'] as const).map((k) => (
+                  <label key={k} className="field">
+                    {k}
+                    <textarea
+                      rows={3}
+                      value={cookies[k]}
+                      onChange={(e) => setCookies({ ...cookies, [k]: e.target.value })}
+                    />
+                  </label>
+                ))}
+              </>
+            )}
             <div className="footer-actions">
               <button type="button" onClick={() => setShowCookies(false)}>
                 关闭
@@ -866,7 +1041,11 @@ export function StudioPage() {
                 onClick={() => {
                   void saveStudioCookies(cookies)
                     .then(() => {
-                      setNotice('Cookie 已保存')
+                      setNotice(
+                        cookies.source === 'browser'
+                          ? `已改为从 ${cookies.browser} 读 Cookie，请回到任务点「重新下载」`
+                          : 'Cookie 已保存，请回到任务点「重新下载」',
+                      )
                       setShowCookies(false)
                     })
                     .catch((err: unknown) =>
