@@ -2,6 +2,9 @@
 
 > 这 5 张是**效果图**，不是最终设计规范。实现时以图上的**状态和元素**为准，
 > 文案可以按真实接口字段调整。
+>
+> **UI 状态（2026-11-19）**：Admin `/studio`（`StudioPage.tsx` + forge CSS）已按五图落地。
+> 后端已支持 DeepSeek `reparse`、选区 `attach-demo`（示范 MP4 + 封面 + 要点同步 SKU）。
 
 ---
 

@@ -299,16 +299,47 @@ export function ExerciseDetailPage() {
   async function onClearSlot() {
     if (!data || !activeSlot?.url) return
     const label = ROLE_LABELS[activeRole] || activeRole
-    if (!window.confirm(`清空「${label}」槽位？旧文件会归档，列表缩略图可能一起消失。`)) return
+    if (
+      !window.confirm(
+        activeRole === 'demo'
+          ? `删除「动图」？会立刻从 H5 拿掉循环示范，并清掉工坊带出的封面。动作名仍在库里能搜到——要从 H5 消失请另点「从 H5 下架」。`
+          : `删除「${label}」素材？立刻生效（可回滚）。这只删图/视频，动作名仍可被 H5 搜到。`,
+      )
+    )
+      return
     setMediaBusy(true)
     setError('')
     try {
       const next = await clearExerciseSlot(data.id, activeRole)
-      applyDetail(next, `已清空「${label}」`)
+      const extra =
+        activeRole === 'demo'
+          ? '（同源封面一并清了）。动作名还在库里，H5 仍能搜到——要从列表消失请点「从 H5 下架」。'
+          : '。动作本身还在，H5 仍能搜到名字；要从列表消失请点「从 H5 下架」。'
+      applyDetail(next, `已删除「${label}」素材${extra}`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '清空失败')
     } finally {
       setMediaBusy(false)
+    }
+  }
+
+  async function onToggleH5Visibility() {
+    if (!data || !form) return
+    const hide = data.is_valid_exercise !== false
+    const msg = hide
+      ? '确认从 H5 下架？用户搜不到、详情也打不开。后台仍可再上架。'
+      : '确认重新上架到 H5？'
+    if (!window.confirm(msg)) return
+    setSaving(true)
+    setError('')
+    try {
+      const next = await updateExercise(data.id, { is_valid_exercise: !hide })
+      applyDetail(next, hide ? '已从 H5 下架（后台仍可见）' : '已重新上架到 H5')
+      if (hide) navigate(peekExercisesReturn())
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -376,6 +407,7 @@ export function ExerciseDetailPage() {
             {data.name_en}
             {data.fdb_id ? ` · ${data.fdb_id}` : ''}
             {form.coach_core ? ' · 主力' : ''}
+            {data.is_valid_exercise === false ? ' · 已从 H5 下架' : ''}
           </div>
         </div>
         <div className="head-actions">
@@ -388,8 +420,23 @@ export function ExerciseDetailPage() {
           >
             {aiBusy ? '生成中…' : 'AI 补全'}
           </button>
-          <button type="button" className="primary" disabled={saving} onClick={onSave}>
-            {saving ? '保存中…' : '发布'}
+          <button
+            type="button"
+            className="secondary danger"
+            disabled={saving}
+            onClick={() => void onToggleH5Visibility()}
+            title={data.is_valid_exercise === false ? '重新上架到 H5' : '从 H5 动作库下架（仍留后台）'}
+          >
+            {data.is_valid_exercise === false ? '重新上架 H5' : '从 H5 下架'}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={saving}
+            onClick={onSave}
+            title="保存右侧名称/教案/提示等到动作库；不会重新切片，也不会恢复已删素材"
+          >
+            {saving ? '保存中…' : '保存字段'}
           </button>
         </div>
       </div>
@@ -407,12 +454,12 @@ export function ExerciseDetailPage() {
             </span>
           </div>
           <div className="panel-note">
-            罕见动作不必硬找网图：有起始/结束两张手机实拍即可上架；动图与高光可选。找不到素材就勾「待复核」。
+            删素材：点槽位 →「删除此素材」（立刻生效，不必再点保存）。删的是图/视频，不是动作名——H5 还能搜到请用右上角「从 H5 下架」。
           </div>
           <div className="media-preview">
             {previewUrl ? (
               previewUrl.match(/\.(mp4|webm|mov)(\?|$)/i) ? (
-                <video src={previewUrl} controls />
+                <video src={previewUrl} muted loop playsInline autoPlay controls />
               ) : (
                 <img src={previewUrl} alt="" />
               )
@@ -465,7 +512,7 @@ export function ExerciseDetailPage() {
             </button>
             {activeSlot?.url ? (
               <button type="button" className="secondary danger" disabled={mediaBusy} onClick={onClearSlot}>
-                清空槽位
+                删除此素材
               </button>
             ) : null}
             {activeSlot?.draft?.media_id ? (

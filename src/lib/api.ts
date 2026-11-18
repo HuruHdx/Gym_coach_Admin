@@ -129,6 +129,8 @@ export type ExerciseUpdatePayload = {
   modality?: string
   coach_core?: boolean
   needs_review?: boolean
+  /** false = 从 H5 动作库下架（后台仍可见，可再上架） */
+  is_valid_exercise?: boolean
   joint_stress?: Record<string, string>
   instructions_zh?: string[]
   cues_zh?: string[]
@@ -163,6 +165,7 @@ export type ExerciseQuery = {
   coach_core?: boolean
   media_state?: string
   needs_review?: boolean
+  sort?: 'updated_desc' | 'name' | 'core' | string
   page?: number
   page_size?: number
 }
@@ -632,19 +635,28 @@ export function deletePlanExercise(exId: number) {
 
 /* ---------- 内容工坊 Studio ---------- */
 
+export type StudioEvidenceLine = { text: string; source_at?: number }
+
 export type StudioExerciseDraft = {
   id: string
   spoken_name: string
   exercise_id?: string | null
   exercise_name?: string | null
   target_muscle?: string | null
+  gear?: string | null
   role?: string
   target_sets?: number | null
   target_reps?: string | null
   sets_from_transcript?: boolean
   source_kind?: string
   match_confidence?: number
-  snippet?: { start?: number; end?: number }
+  snippet?: { start?: number; end?: number; spoken_at?: number }
+  spoken_at?: number
+  media_status?: 'uncut' | 'clipped' | 'library' | 'pending_sku' | string
+  cues?: StudioEvidenceLine[]
+  mistakes?: StudioEvidenceLine[]
+  tempo?: string
+  intensity?: string
   traffic?: 'red' | 'amber' | 'green' | string
   replace_demo?: boolean
   attach_demo?: boolean
@@ -661,6 +673,7 @@ export type StudioDraft = {
   scene_tag?: string | null
   cover_url?: string | null
   mode?: string
+  parse_engine?: 'llm' | 'heuristic' | string
   blocks: StudioBlockDraft[]
 }
 
@@ -676,6 +689,9 @@ export type StudioTask = {
   mode: string
   status: string
   progress: number
+  pipeline_step?: string
+  exercise_count?: number
+  clipped_count?: number
   transcript_json: {
     engine?: string
     warning?: string
@@ -726,23 +742,54 @@ export function fetchStudioCookies() {
   }>('/api/admin/studio/cookies')
 }
 
+export function fetchStudioDeps() {
+  return request<{
+    yt_dlp: boolean
+    ffmpeg: boolean
+    faster_whisper: boolean
+    llm?: boolean
+    llm_model?: string | null
+    cookie_source?: string
+  }>('/api/admin/studio/deps')
+}
+
 export async function ingestStudioBatch(opts: {
   text?: string
   mode?: string
   merge_into_one_plan?: boolean
   plan_title?: string
   files?: File[]
+  pause_for_confirm?: boolean
+  source_kind?: 'share' | 'direct' | 'file' | string
 }) {
   const body = new FormData()
   if (opts.text) body.append('text', opts.text)
   body.append('mode', opts.mode || 'plan_single')
   body.append('merge_into_one_plan', String(Boolean(opts.merge_into_one_plan)))
+  body.append('pause_for_confirm', String(Boolean(opts.pause_for_confirm)))
+  if (opts.source_kind) body.append('source_kind', opts.source_kind)
   if (opts.plan_title) body.append('plan_title', opts.plan_title)
   for (const f of opts.files || []) body.append('files', f)
   return request<{ batch_id: string | null; items: StudioTask[] }>(
     '/api/admin/studio/ingest-batch',
     { method: 'POST', body },
   )
+}
+
+export function continueStudioPipeline(taskId: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/continue`, { method: 'POST' })
+}
+
+export function retranscribeStudioTask(taskId: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/retranscribe`, {
+    method: 'POST',
+  })
+}
+
+export function reparseStudioTask(taskId: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/reparse`, {
+    method: 'POST',
+  })
 }
 
 export async function uploadStudioFallback(taskId: number, file: File) {
@@ -805,6 +852,18 @@ export function quickCreateStudioExercise(payload: {
 }) {
   return request<{ exercise: { id: string; name_zh: string }; demo: unknown }>(
     '/api/admin/studio/quick-create-exercise',
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+export function attachStudioDemo(payload: {
+  task_id: number
+  exercise_id: string
+  start: number
+  end: number
+}) {
+  return request<{ ok: boolean; exercise_id: string; demo: { demo_url?: string; cover_url?: string } }>(
+    '/api/admin/studio/attach-demo',
     { method: 'POST', body: JSON.stringify(payload) },
   )
 }

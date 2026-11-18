@@ -59,6 +59,7 @@ export function ExercisesPage() {
 
   const query = useMemo(() => {
     const page = Math.max(1, Number(params.get('page') || 1) || 1)
+    const sort = params.get('sort') || 'updated_desc'
     return {
       q: params.get('q') || undefined,
       muscle: params.get('muscle') || undefined,
@@ -68,6 +69,7 @@ export function ExercisesPage() {
       media_state: params.get('media_state') || undefined,
       coach_core: parseBoolParam(params.get('coach_core')),
       needs_review: parseBoolParam(params.get('needs_review')),
+      sort,
       page,
       page_size: PAGE_SIZE,
     }
@@ -238,6 +240,16 @@ export function ExercisesPage() {
           placeholder="素材状态"
           options={MEDIA_STATES.map((s) => ({ value: s.value, label: s.label }))}
           onChange={(value) => patchFilters({ media_state: value || null })}
+        />
+        <FilterSelect
+          value={query.sort || 'updated_desc'}
+          placeholder="排序"
+          options={[
+            { value: 'updated_desc', label: '最新更新' },
+            { value: 'core', label: '主力优先' },
+            { value: 'name', label: '按名称' },
+          ]}
+          onChange={(value) => patchFilters({ sort: value || 'updated_desc' })}
         />
         <button
           type="button"

@@ -56,7 +56,7 @@
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: stretch;
   gap: 10px;
   margin-bottom: var(--sp-3);
 }
@@ -65,7 +65,18 @@
 .ex-list .toolbar > .filter-select,
 .ex-list .toolbar > .chip {
   height: 40px;
+  min-height: 40px;
   flex: 0 0 auto;
+  box-sizing: border-box;
+}
+
+.ex-list .toolbar > .filter-select {
+  min-width: 132px;
+}
+
+.ex-list .toolbar > .chip {
+  margin: 0;
+  line-height: 1;
 }
 
 .ex-list .field {
