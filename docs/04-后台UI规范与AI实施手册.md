@@ -157,7 +157,7 @@
 
 ## 7. AI 实施纪律与视觉还原要求
 
-工程分阶段节奏严格遵循 **`docs/05-分阶段实施路线图.md`**（A0 → A1 → A2 → A3 → A4 → A5 → H1 → H2）。在实现每个后台页面时遵守以下纪律：
+在实现每个后台页面时遵守以下纪律：
 
 1. **直接复用 `preview/` 的 CSS Token 与 DOM 结构**：
    - 全局变量直接拷贝 `preview/tokens.css` 到 `src/styles/tokens.css`

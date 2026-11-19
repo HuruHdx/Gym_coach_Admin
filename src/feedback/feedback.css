@@ -1,0 +1,165 @@
+/* 公共反馈层：toast / spinner / page-state / loading mask */
+
+.fb-toast-host {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(480px, calc(100vw - 24px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.fb-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  animation: fb-in 0.18s var(--ease-out);
+}
+
+.fb-toast.ok {
+  border-color: color-mix(in srgb, var(--done) 55%, var(--line));
+  color: var(--done);
+}
+
+.fb-toast.err {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  color: var(--danger);
+}
+
+.fb-toast.info {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--text-1);
+}
+
+.fb-toast-x {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fb-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: currentColor;
+  line-height: 1;
+}
+
+.fb-spinner svg {
+  display: block;
+  animation: fb-spin 0.7s linear infinite;
+}
+
+.fb-spinner-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.fb-loading-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1210;
+  display: grid;
+  place-items: center;
+  background: var(--mask);
+}
+
+.fb-loading-card {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 148px;
+  padding: 14px 36px 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+.fb-loading-card .fb-toast-x {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+}
+
+.fb-page-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 160px;
+  padding: 28px 16px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.fb-page-state strong {
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fb-page-state.error strong {
+  color: var(--danger);
+}
+
+.fb-page-desc {
+  max-width: 36em;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fb-page-action {
+  margin-top: 4px;
+}
+
+@keyframes fb-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fb-toast {
+    animation: none;
+  }
+  .fb-spinner svg {
+    animation: none;
+  }
+}

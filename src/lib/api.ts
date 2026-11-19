@@ -637,6 +637,16 @@ export function deletePlanExercise(exId: number) {
 
 export type StudioEvidenceLine = { text: string; source_at?: number }
 
+export type StudioMatchCandidate = {
+  id: string
+  name_zh: string
+  muscle?: string | null
+  gear?: string | null
+  has_demo?: boolean
+  score: number
+  reason?: string
+}
+
 export type StudioExerciseDraft = {
   id: string
   spoken_name: string
@@ -649,7 +659,10 @@ export type StudioExerciseDraft = {
   target_reps?: string | null
   sets_from_transcript?: boolean
   source_kind?: string
+  /** 0～100 百分制匹配分；与 match_confidence 同步（confidence = score/100） */
+  match_score?: number
   match_confidence?: number
+  candidates?: StudioMatchCandidate[]
   snippet?: { start?: number; end?: number; spoken_at?: number }
   spoken_at?: number
   media_status?: 'uncut' | 'clipped' | 'library' | 'pending_sku' | string
@@ -660,6 +673,13 @@ export type StudioExerciseDraft = {
   traffic?: 'red' | 'amber' | 'green' | string
   replace_demo?: boolean
   attach_demo?: boolean
+  /** none=仅本次；append=发布时追加；replace=发布时替换（可还原） */
+  cue_mode?: 'none' | 'append' | 'replace' | string
+  cues_library_backup?: {
+    cues_zh?: string[]
+    common_mistakes_zh?: string[]
+    instructions_zh?: string[]
+  } | null
 }
 
 export type StudioBlockDraft = {
@@ -849,11 +869,66 @@ export function quickCreateStudioExercise(payload: {
   start?: number | null
   end?: number | null
   attach_demo?: boolean
+  cues?: StudioEvidenceLine[]
+  mistakes?: StudioEvidenceLine[]
+  write_cues?: boolean
 }) {
   return request<{ exercise: { id: string; name_zh: string }; demo: unknown }>(
     '/api/admin/studio/quick-create-exercise',
     { method: 'POST', body: JSON.stringify(payload) },
   )
+}
+
+export type StudioCuePair = {
+  library_cue?: string | null
+  draft_cue?: string | null
+  relation: 'replace' | 'add' | 'keep' | string
+  reason?: string
+  pending?: boolean
+}
+
+export type StudioCuePairResult = {
+  ok: boolean
+  row_id: string
+  exercise_id?: string | null
+  library: string[]
+  draft: { text: string; timestamp?: number | null; kind?: string }[]
+  pairs: StudioCuePair[]
+  summary: { replace: number; add: number; keep?: number; result_total: number }
+  degraded?: boolean
+  engine?: string
+}
+
+export function pairStudioCues(payload: {
+  task_id: number
+  row_id: string
+  exercise_id?: string | null
+}) {
+  return request<StudioCuePairResult>('/api/admin/studio/pair-cues', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function writeStudioCues(payload: {
+  task_id: number
+  row_id: string
+  cue_mode: 'none' | 'append' | 'replace' | string
+  pairs?: StudioCuePair[]
+}) {
+  return request<{
+    ok: boolean
+    mode?: string
+    exercise_id?: string
+    cues?: string[]
+    mistakes?: string[]
+    backup?: unknown
+    message?: string
+    reason?: string
+  }>('/api/admin/studio/write-cues', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function attachStudioDemo(payload: {
@@ -879,6 +954,7 @@ export function confirmStudioPlan(payload: {
     plan_id: string | null
     block_ids: number[]
     attached?: number
+    cues_synced?: number
   }>('/api/admin/studio/confirm-plan', {
     method: 'POST',
     body: JSON.stringify(payload),
