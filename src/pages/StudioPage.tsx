@@ -22,14 +22,12 @@ import {
   saveStudioCookies,
   saveStudioDraft,
   updateExercise,
-  uploadExerciseMedia,
   uploadStudioFallback,
   uploadStudioTaskCover,
   writeStudioCues,
   type ExerciseListItem,
   type StudioCuePair,
   type StudioDraft,
-  type StudioEvidenceLine,
   type StudioExerciseDraft,
   type StudioMatchCandidate,
   type StudioTask,
@@ -1148,32 +1146,6 @@ export function StudioPage() {
     }
   }
 
-  async function onUploadSkuMedia(ex: StudioExerciseDraft, file: File | null) {
-    if (!file) return
-    let exerciseId = ex.exercise_id
-    if (!exerciseId) {
-      const created = await onQuickCreate({ ...ex, media_status: 'uncut' })
-      exerciseId = created?.exercise_id || null
-      if (!exerciseId) return
-    }
-    const lower = file.name.toLowerCase()
-    const isVideo = /\.(mp4|webm|mov)$/.test(lower)
-    const role = isVideo ? 'demo' : 'start'
-    setBusy(true)
-    try {
-      await uploadExerciseMedia(exerciseId, role, file, true)
-      patchExercise(ex.id, {
-        exercise_id: exerciseId,
-        media_status: isVideo ? 'clipped' : ex.media_status === 'clipped' ? 'clipped' : 'library',
-      })
-      toast.ok(isVideo ? '示范视频已上传到动作库' : '封面图/GIF 已上传到动作库')
-    } catch (err: unknown) {
-      toast.err(err instanceof Error ? err.message : '上传失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   function adoptCandidate(ex: StudioExerciseDraft, hit: StudioMatchCandidate | ExerciseListItem) {
     const score = 'score' in hit && hit.score != null ? Number(hit.score) : 100
     patchExercise(ex.id, {
@@ -2131,62 +2103,6 @@ export function StudioPage() {
   }
 
   /* ── 动作详情 (05) ── */
-
-  function quoteFor(at?: number) {
-    if (at === undefined || !segments.length) return null
-    const hit =
-      segments.find((s) => at >= s.start - 0.5 && at <= s.end + 0.5) ||
-      segments.reduce<{ s: (typeof segments)[number] | null; d: number }>(
-        (best, s) => {
-          const d = Math.abs(s.start - at)
-          return d < best.d ? { s, d } : best
-        },
-        { s: null, d: 3 },
-      ).s
-    return hit?.text || null
-  }
-
-  function renderEvidence(line: StudioEvidenceLine) {
-    const quote = quoteFor(line.source_at)
-    if (line.source_at === undefined) {
-      return <span className="evi warn">未在原文中点名，需人工确认</span>
-    }
-    return (
-      <span className="evi">
-        依据原文 <span className="num">{fmtAnchor(line.source_at)}</span>
-        {quote ? <> 「{quote}」</> : null}
-      </span>
-    )
-  }
-
-  function renderLines(ex: StudioExerciseDraft, key: 'cues' | 'mistakes') {
-    const list = ex[key] || []
-    const isCue = key === 'cues'
-    if (!list.length) return <p className="muted">还没有内容（LLM 没抽到，可到原文里核对）。</p>
-    return (
-      <ul className="lines">
-        {list.map((line, i) => (
-          <li key={`${key}-${i}`}>
-            <span className={`ico ${isCue ? 'ok' : 'amber'}`}>{isCue ? '✓' : '!'}</span>
-            <div>
-              <p>{line.text}</p>
-              {renderEvidence(line)}
-            </div>
-            <button
-              type="button"
-              className="link"
-              onClick={() => {
-                const rest = list.filter((_, j) => j !== i)
-                patchExercise(ex.id, isCue ? { cues: rest } : { mistakes: rest })
-              }}
-            >
-              移除
-            </button>
-          </li>
-        ))}
-      </ul>
-    )
-  }
 
   function renderActionCard(r: Row) {
     const ex = r.ex

@@ -6,15 +6,35 @@ export type ToastItem = {
   text: string
 }
 
+type FeedbackSnapshot = {
+  toasts: ToastItem[]
+  loading: boolean
+  loadingText: string
+}
+
 type Listener = () => void
 
 let toastSeq = 1
 let toasts: ToastItem[] = []
 let loadingCount = 0
 let loadingText = '处理中…'
+let snapshot: FeedbackSnapshot = {
+  toasts,
+  loading: false,
+  loadingText,
+}
 const listeners = new Set<Listener>()
 
+function refreshSnapshot() {
+  snapshot = {
+    toasts,
+    loading: loadingCount > 0,
+    loadingText,
+  }
+}
+
 function emit() {
+  refreshSnapshot()
   listeners.forEach((fn) => fn())
 }
 
@@ -26,11 +46,7 @@ export function subscribeFeedback(listener: Listener) {
 }
 
 export function getFeedbackSnapshot() {
-  return {
-    toasts,
-    loading: loadingCount > 0,
-    loadingText,
-  }
+  return snapshot
 }
 
 function pushToast(kind: ToastKind, text: string, ms = 3200) {
