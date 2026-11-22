@@ -21,6 +21,7 @@ import {
   retryStudioDownload,
   saveStudioCookies,
   saveStudioDraft,
+  skipStudioTranscribe,
   updateExercise,
   uploadStudioFallback,
   uploadStudioTaskCover,
@@ -40,17 +41,26 @@ import './StudioPage.css'
 const TARGET_MUSCLES = ['胸', '背', '肩', '腿', '臂', '核心'] as const
 const IN_PROGRESS = ['queued', 'downloading', 'transcribing', 'parsing'] as const
 const STEP_LABELS = ['已入库', '已下载', '字幕', '切动作', '发布'] as const
+const DEMO_MIN_SEC = 2
+const DEMO_MAX_SEC = 15
 
 type IngestKind = 'share' | 'direct' | 'file'
 type IngestMode = 'plan_single' | 'plan_merge' | 'exercise_only'
 type ProcessDegree = 'standard' | 'transcript' | 'assets'
 type Traffic = 'red' | 'amber' | 'green'
 type Sel = { start: number; end: number } | null
-type LiveInfo = { percent?: number; size?: string; speed?: string; eta?: string; stage?: string }
+type LiveInfo = {
+  percent?: number
+  size?: string
+  speed?: string
+  eta?: string
+  stage?: string
+  detail?: string
+}
 type Row = { ex: StudioExerciseDraft; block: number; n: number }
 type ProducedItem = {
   id: string
-  kind: 'demo' | 'gif' | 'cover'
+  kind: 'demo' | 'cover'
   label: string
   start?: number
   end?: number
@@ -176,14 +186,38 @@ function cookieReadyFor(
 
 /* ───────────── 纯函数 ───────────── */
 
+/** ≥90 且非含糊：自动预填主命中（后端通常已写；前端兜底） */
+function withAutoBind(ex: StudioExerciseDraft): StudioExerciseDraft {
+  if (ex.exercise_id) {
+    return ex.traffic === 'green' ? ex : { ...ex, traffic: 'green' }
+  }
+  const top = [...(ex.candidates || [])].sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0]
+  if (!top || Number(top.score) < 90) return ex
+  return {
+    ...ex,
+    exercise_id: top.id,
+    exercise_name: top.name_zh,
+    gear: top.gear || ex.gear,
+    target_muscle: top.muscle || ex.target_muscle,
+    match_score: Number(top.score),
+    match_confidence: Number(top.score) / 100,
+    traffic: 'green',
+    media_status: ex.media_status === 'clipped' ? 'clipped' : ex.media_status || 'library',
+  }
+}
+
 function asDraft(raw: StudioTask['draft_json']): StudioDraft {
   const d = (raw || {}) as StudioDraft
+  const blocks = (Array.isArray(d.blocks) ? d.blocks : []).map((b) => ({
+    ...b,
+    exercises: (b.exercises || []).map(withAutoBind),
+  }))
   return {
     plan_title: d.plan_title || '',
     scene_tag: d.scene_tag || '博主同款',
     cover_url: d.cover_url || '',
     mode: d.mode,
-    blocks: Array.isArray(d.blocks) ? d.blocks : [],
+    blocks,
   }
 }
 
@@ -199,6 +233,14 @@ function statusLabel(s: string) {
     failed: '失败',
   }
   return map[s] || s
+}
+
+function taskPublished(t: StudioTask) {
+  const ref = t.result_ref || {}
+  if (t.review_state === 'published') return true
+  if (ref.published === true) return true
+  if (typeof ref.plan_id === 'string' && ref.plan_id && ref.published !== false) return true
+  return false
 }
 
 /** 队列上的状态文案：没字幕 / 没拆出动作时不要谎称「已解析」 */
@@ -221,14 +263,37 @@ function taskQueueLabel(t: StudioTask): { label: string; tone: 'ok' | 'amber' | 
     return { label: statusLabel(t.status), tone: 'run' }
   }
   if (t.status === 'done') {
+    if (taskPublished(t)) {
+      return { label: '已发布', tone: 'ok' }
+    }
+    if (t.review_state === 'drafted') {
+      return { label: '已存草稿', tone: 'ok' }
+    }
     const segs = t.transcript_json?.segments || []
     const warn = Boolean(t.transcript_json?.warning)
     const n = Number(t.exercise_count ?? t.score?.total ?? 0)
     if (!segs.length || warn) return { label: '缺字幕', tone: 'amber' }
     if (n <= 0) return { label: '未拆出动作', tone: 'amber' }
-    return { label: `待审核 · ${n}`, tone: 'ok' }
+    const draft = (t.draft_json || {}) as StudioDraft
+    const unbound = (draft.blocks || []).some((b) =>
+      (b.exercises || []).some((ex) => ex.source_kind !== 'missing' && ex.spoken_name !== '待人工补充' && !ex.exercise_id),
+    )
+    if (unbound) return { label: `待绑定 · ${n}`, tone: 'amber' }
+    return { label: `可发布 · ${n}`, tone: 'ok' }
   }
   return { label: statusLabel(t.status), tone: 'run' }
+}
+
+function clipMetaFromDraft(d: StudioDraft): Record<string, { demo?: string; cover?: string }> {
+  const out: Record<string, { demo?: string; cover?: string }> = {}
+  for (const b of d.blocks || []) {
+    for (const ex of b.exercises || []) {
+      const demo = mediaSrc(ex.demo_url || null) || undefined
+      const cover = mediaSrc(ex.demo_cover_url || null) || undefined
+      if (demo || cover) out[ex.id] = { demo, cover }
+    }
+  }
+  return out
 }
 
 function stageLabel(stage?: string) {
@@ -237,6 +302,8 @@ function stageLabel(stage?: string) {
     merging: '合流阶段',
     merge: '合流阶段',
     awaiting_confirm: '等你确认',
+    extract_audio: '抽音轨',
+    load_model: '加载模型',
     transcribing: '转字幕',
     parsing: '拆计划',
   }
@@ -291,16 +358,21 @@ function cueModeLabel(mode: string | undefined) {
   return '按上面的换（默认）'
 }
 
-function mediaTag(ex: StudioExerciseDraft): { label: string; cls: string } {
+/** 只标示范素材状态；绑定看圆点，不在这里再说「已绑」 */
+function mediaTag(ex: StudioExerciseDraft): { label: string; cls: string } | null {
   switch (ex.media_status) {
     case 'clipped':
-      return { label: '已切 ✓', cls: 'ok' }
+      return { label: '示范已切', cls: 'ok' }
     case 'library':
-      return { label: '用库里', cls: 'info' }
+      return { label: '库有示范', cls: 'info' }
     case 'pending_sku':
-      return { label: '库外待建', cls: 'red' }
+      return { label: '还没建库动作', cls: 'red' }
+    case 'uncut':
+      return ex.exercise_id ? { label: '未切示范', cls: 'mute' } : { label: '还没建库动作', cls: 'red' }
     default:
-      return ex.exercise_id ? { label: '未切', cls: 'mute' } : { label: '库外待建', cls: 'red' }
+      if (!ex.exercise_id) return { label: '还没建库动作', cls: 'red' }
+      // 已绑但没切过：不必再挂「已绑」字，留给圆点
+      return null
   }
 }
 
@@ -386,8 +458,12 @@ export function StudioPage() {
   const coverRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const waveRef = useRef<HTMLDivElement>(null)
+  const waveWrapRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ mode: 'start' | 'end' | 'new'; anchor: number; moved: boolean } | null>(null)
   const playUntilRef = useRef<number | null>(null)
+  const playRangeRef = useRef<{ start: number; end: number } | null>(null)
+  const selLoopRef = useRef(false)
+  const ignorePauseRef = useRef(false)
   const taskRef = useRef<StudioTask | null>(null)
 
   const [tasks, setTasks] = useState<StudioTask[]>([])
@@ -411,7 +487,6 @@ export function StudioPage() {
   const [cookieBusy, setCookieBusy] = useState(false)
   const [cookieBrowserReady, setCookieBrowserReady] = useState(false)
   const [showDepsHelp, setShowDepsHelp] = useState(false)
-  const [showSelMore, setShowSelMore] = useState(false)
 
   // Cookie / 环境（只读展示 + 就地读浏览器）
   const [deps, setDeps] = useState<{
@@ -435,8 +510,9 @@ export function StudioPage() {
   const [curTime, setCurTime] = useState(0)
   const [activeRowId, setActiveRowId] = useState<string | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [clipUrls, setClipUrls] = useState<Record<string, string>>({})
-  const [gifItems, setGifItems] = useState<ProducedItem[]>([])
+  /** 示范产出：缩略图用 cover，预览用 demo */
+  const [clipMeta, setClipMeta] = useState<Record<string, { demo?: string; cover?: string }>>({})
+  const [demoPickOpen, setDemoPickOpen] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   const [planInfoOpen, setPlanInfoOpen] = useState(false)
   const [activeBlockIdx, setActiveBlockIdx] = useState(-1)
@@ -457,10 +533,10 @@ export function StudioPage() {
   const [cueDrawerMode, setCueDrawerMode] = useState<'replace' | 'append' | 'none'>('replace')
   const [renameBusy, setRenameBusy] = useState(false)
 
-  // 绑定搜索
-  const [pickerQ, setPickerQ] = useState('')
-  const [pickerHits, setPickerHits] = useState<ExerciseListItem[]>([])
-  const [pickerRowId, setPickerRowId] = useState<string | null>(null)
+  // 抽屉内：已绑则收起；点「不对，重选」再展开相关列表
+  const [bindFilter, setBindFilter] = useState('')
+  const [bindHits, setBindHits] = useState<ExerciseListItem[]>([])
+  const [bindPickerOpen, setBindPickerOpen] = useState(false)
 
   useEffect(() => {
     taskRef.current = task
@@ -476,18 +552,21 @@ export function StudioPage() {
 
   const selectTask = useCallback(async (id: number) => {
     const detail = await fetchStudioTask(id)
+    const nextDraft = asDraft(detail.draft_json)
     setActiveId(id)
     setTask(detail)
-    setDraft(asDraft(detail.draft_json))
+    setDraft(nextDraft)
     setActiveBlockIdx(-1)
     setSel(null)
     setDuration(0)
     setCurTime(0)
     setActiveRowId(null)
     setPreviewUrl(null)
-    setClipUrls({})
+    setClipMeta(clipMetaFromDraft(nextDraft))
     setGifItems([])
-    setPickerRowId(null)
+    setBindFilter('')
+    setBindHits([])
+    setBindPickerOpen(false)
   }, [])
 
   /** 轮询刷新：只在状态变化 / 仍在处理中时覆盖草稿，避免吞掉人工编辑 */
@@ -496,7 +575,9 @@ export function StudioPage() {
     const prev = taskRef.current
     setTask(detail)
     if (!prev || prev.id !== id || prev.status !== detail.status || prev.status !== 'done') {
-      setDraft(asDraft(detail.draft_json))
+      const nextDraft = asDraft(detail.draft_json)
+      setDraft(nextDraft)
+      setClipMeta((prevMeta) => ({ ...clipMetaFromDraft(nextDraft), ...prevMeta }))
     }
   }, [])
 
@@ -546,27 +627,32 @@ export function StudioPage() {
     return () => window.clearInterval(timer)
   }, [ticking, activeId, reloadList, refreshActive])
 
-  // 搜库
+  // 抽屉绑定时拉相关库动作
   useEffect(() => {
-    if (!pickerQ.trim()) {
-      setPickerHits([])
+    if (!cueDrawerRowId) {
+      setBindHits([])
+      return
+    }
+    const q = bindFilter.trim()
+    if (!q) {
+      setBindHits([])
       return
     }
     let alive = true
     const timer = window.setTimeout(() => {
-      fetchExercises({ q: pickerQ.trim(), page: 1, page_size: 8 })
+      fetchExercises({ q, page: 1, page_size: 12 })
         .then((res) => {
-          if (alive) setPickerHits(res.items)
+          if (alive) setBindHits(res.items)
         })
         .catch(() => {
-          if (alive) setPickerHits([])
+          if (alive) setBindHits([])
         })
-    }, 220)
+    }, 180)
     return () => {
       alive = false
       window.clearTimeout(timer)
     }
-  }, [pickerQ])
+  }, [bindFilter, cueDrawerRowId])
 
   /* ── 派生数据 ── */
 
@@ -611,17 +697,19 @@ export function StudioPage() {
       if (r.ex.media_status !== 'clipped') continue
       const start = Number(r.ex.snippet?.start ?? 0)
       const end = Number(r.ex.snippet?.end ?? start)
+      const meta = clipMeta[r.ex.id]
       items.push({
         id: `demo-${r.ex.id}`,
         kind: 'demo',
         label: r.ex.spoken_name || r.ex.exercise_name || `示范 ${r.n}`,
         start,
         end,
-        url: clipUrls[r.ex.id],
+        // 必须用封面图；demo 是 mp4，塞进 <img> 会裂图
+        url: meta?.cover || mediaSrc(r.ex.demo_cover_url || null) || undefined,
       })
     }
-    return [...items, ...gifItems]
-  }, [draft.cover_url, rows, clipUrls, gifItems])
+    return items
+  }, [draft.cover_url, rows, clipMeta])
 
   const anchors = useMemo(
     () =>
@@ -650,7 +738,6 @@ export function StudioPage() {
       })),
     }))
     if (activeRowId === rowId) setActiveRowId(null)
-    if (pickerRowId === rowId) setPickerRowId(null)
     toast.ok(`已从清单移除「${label}」。点「存草稿」固化；SKU 若还在库里，可到动作库页下架。`)
   }
 
@@ -660,21 +747,48 @@ export function StudioPage() {
     setCurTime(Math.max(0, sec))
   }
 
-  function activateRow(ex: StudioExerciseDraft, opts?: { toggle?: boolean }) {
-    // 再点同一行 = 收起
-    if (opts?.toggle && activeRowId === ex.id) {
-      setActiveRowId(null)
-      setPickerRowId(null)
-      return
-    }
+  function stopSelLoop() {
+    selLoopRef.current = false
+    playUntilRef.current = null
+    playRangeRef.current = null
+  }
+
+  /** 点清单：视频 + 波形选区一起定位，并滚到波形 */
+  function focusWaveAt(range: { start: number; end: number }) {
+    const start = Math.max(0, range.start)
+    const end = Math.max(start + 0.3, range.end)
+    setSel({ start, end })
+    seekTo(start)
+    requestAnimationFrame(() => {
+      waveWrapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+  }
+
+  function defaultSelAround(at: number): { start: number; end: number } {
+    const dur = duration > 0 ? duration : at + 8
+    const start = Math.max(0, at - 0.5)
+    const end = Math.min(dur, start + Math.max(DEMO_MIN_SEC, 4))
+    return { start, end: Math.max(start + DEMO_MIN_SEC, end) }
+  }
+
+  /** 点清单 / 锚点：只定位视频+波形，不弹详情 */
+  function focusRow(ex: StudioExerciseDraft) {
     setActiveRowId(ex.id)
+    stopSelLoop()
+    videoRef.current?.pause()
     const at = anchorOf(ex)
-    if (ex.media_status === 'clipped' && ex.snippet?.start != null && ex.snippet?.end != null) {
-      setSel({ start: Number(ex.snippet.start), end: Number(ex.snippet.end) })
-      seekTo(Number(ex.snippet.start))
+    if (ex.snippet?.start != null && ex.snippet?.end != null) {
+      focusWaveAt({ start: Number(ex.snippet.start), end: Number(ex.snippet.end) })
     } else if (at !== undefined) {
-      seekTo(Math.max(0, at - 1))
+      focusWaveAt(defaultSelAround(Math.max(0, at)))
+    } else {
+      waveWrapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
+  }
+
+  function openRowDetail(ex: StudioExerciseDraft) {
+    setActiveRowId(ex.id)
+    void openCueDrawer(ex)
   }
 
   function addManualRow() {
@@ -880,6 +994,25 @@ export function StudioPage() {
     }
   }
 
+  async function onSkipTranscribe() {
+    if (activeId == null) return
+    if (!window.confirm('跳过自动字幕，直接进工作台手填动作？视频还在，之后仍可点「重跑字幕」。')) return
+    setBusy(true)
+    try {
+      const next = await skipStudioTranscribe(activeId)
+      setTask(next)
+      setDraft(asDraft(next.draft_json))
+      setClipMeta(clipMetaFromDraft(asDraft(next.draft_json)))
+      setSkipSubtitle((prev) => ({ ...prev, [activeId]: true }))
+      await reloadList()
+      toast.ok('已跳过字幕，可在右栏手填动作')
+    } catch (err: unknown) {
+      toast.err(err instanceof Error ? err.message : '跳过失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onReparse() {
     if (activeId == null) return
     setBusy(true)
@@ -891,12 +1024,12 @@ export function StudioPage() {
         const engine = (next.draft_json as StudioDraft | undefined)?.parse_engine
         toast.ok(
           engine === 'llm'
-            ? `DeepSeek 已重拆 · ${next.exercise_count ?? next.score?.total ?? 0} 个动作`
-            : `启发式兜底重拆 · ${next.exercise_count ?? next.score?.total ?? 0} 个动作（检查 LLM 配置）`,
+            ? `AI 已重新拆出 ${next.exercise_count ?? next.score?.total ?? 0} 个动作`
+            : `启发式兜底 · ${next.exercise_count ?? next.score?.total ?? 0} 个动作（检查 LLM 配置）`,
         )
       })
     } catch (err: unknown) {
-      toast.err(err instanceof Error ? err.message : 'LLM 重拆失败')
+      toast.err(err instanceof Error ? err.message : '重新拆动作失败')
     } finally {
       setBusy(false)
     }
@@ -932,70 +1065,85 @@ export function StudioPage() {
     }
   }
 
-  /* ── 操作：选区 / 出库 ── */
+  /* ── 操作：选区 → 示范片段 ── */
+  function selDurationSec(range: { start: number; end: number } | null = sel) {
+    if (!range) return 0
+    return range.end - range.start
+  }
 
-  async function onClipOut() {
-    if (activeId == null || !sel) return
-    // 已选中动作行：出库 = 把选区做成示范写进 SKU（不是让你再上传 GIF）
-    if (activeRow) {
-      patchExercise(activeRow.ex.id, {
-        snippet: { ...activeRow.ex.snippet, start: sel.start, end: sel.end },
-        media_status: 'clipped',
-        attach_demo: true,
-      })
-      await onAttachDemoNow({
-        ...activeRow.ex,
-        snippet: { ...activeRow.ex.snippet, start: sel.start, end: sel.end },
-        media_status: 'clipped',
-        attach_demo: true,
-      })
+  function assertDemoDuration(range: { start: number; end: number } | null = sel): boolean {
+    const dur = selDurationSec(range)
+    if (dur < DEMO_MIN_SEC) {
+      toast.err(`示范太短：至少 ${DEMO_MIN_SEC} 秒（现在 ${(dur).toFixed(1)}s）`)
+      return false
+    }
+    if (dur > DEMO_MAX_SEC) {
+      toast.err(`示范太长：最多 ${DEMO_MAX_SEC} 秒，请缩短选区（现在 ${(dur).toFixed(1)}s）`)
+      return false
+    }
+    return true
+  }
+
+  function openDemoPick() {
+    if (!sel) {
+      toast.err('先在波形上拖一段选区')
+      return
+    }
+    if (!assertDemoDuration(sel)) return
+    if (!rows.length) {
+      toast.err('还没有动作清单')
+      return
+    }
+    setDemoPickOpen(true)
+  }
+
+  async function attachDemoToRow(r: Row) {
+    if (!sel || !assertDemoDuration(sel)) return
+    setDemoPickOpen(false)
+    setActiveRowId(r.ex.id)
+    await onAttachDemoNow({
+      ...r.ex,
+      snippet: { ...r.ex.snippet, start: sel.start, end: sel.end },
+      attach_demo: true,
+    })
+  }
+
+  async function onSetPlanCover() {
+    if (activeId == null || !sel) {
+      toast.err('先在波形上拖一段选区')
       return
     }
     setBusy(true)
     try {
       const res = await previewStudioClip(activeId, sel.start, sel.end)
-      setPreviewUrl(mediaSrc(res.demo_url))
-      toast.ok(`已预览 ${(sel.end - sel.start).toFixed(1)} 秒。先点右侧某个动作，再出库才会写入该 SKU。`)
-    } catch (err: unknown) {
-      toast.err(err instanceof Error ? err.message : '切片失败（需 ffmpeg）')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function onSetCover() {
-    if (activeId == null || !sel) return
-    setBusy(true)
-    try {
-      const res = await previewStudioClip(activeId, sel.start, sel.end)
       setDraft((prev) => ({ ...prev, cover_url: res.cover_url }))
       setPlanInfoOpen(true)
-      toast.ok('已设为计划背景图（H5 计划详情顶图）。记得存草稿 / 发布。')
+      toast.ok('已设为计划封面，记得存草稿')
     } catch (err: unknown) {
-      toast.err(err instanceof Error ? err.message : '设置计划背景失败（需 ffmpeg）')
+      toast.err(err instanceof Error ? err.message : '设置计划封面失败（需 ffmpeg）')
     } finally {
       setBusy(false)
     }
   }
 
-  function playSelection(range?: { start: number; end: number } | null) {
+  function playSelection(range?: { start: number; end: number } | null, opts?: { loop?: boolean }) {
     const el = videoRef.current
     const target = range ?? sel
     if (!el || !target) return
-    playUntilRef.current = target.end
-    el.currentTime = target.start
-    setCurTime(target.start)
-    void el.play().catch(() => undefined)
-  }
-
-  function setStartFromPlayhead() {
-    const t = videoRef.current?.currentTime ?? curTime
-    setSel((prev) => ({ start: t, end: Math.max(prev?.end ?? t + 3, t + 0.3) }))
-  }
-
-  function setEndFromPlayhead() {
-    const t = videoRef.current?.currentTime ?? curTime
-    setSel((prev) => ({ start: Math.min(prev?.start ?? Math.max(0, t - 3), t - 0.3), end: t }))
+    const next = { start: target.start, end: target.end }
+    playRangeRef.current = next
+    playUntilRef.current = next.end
+    selLoopRef.current = opts?.loop !== false
+    ignorePauseRef.current = true
+    el.currentTime = next.start
+    setCurTime(next.start)
+    void el.play()
+      .catch(() => undefined)
+      .finally(() => {
+        window.setTimeout(() => {
+          ignorePauseRef.current = false
+        }, 80)
+      })
   }
 
   /* ── 波形拖拽 ── */
@@ -1011,6 +1159,7 @@ export function StudioPage() {
   function onWaveDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (!duration || !waveRef.current) return
     e.currentTarget.setPointerCapture(e.pointerId)
+    stopSelLoop()
     videoRef.current?.pause()
     const t = posToSec(e.clientX)
     const width = waveRef.current.getBoundingClientRect().width
@@ -1116,9 +1265,10 @@ export function StudioPage() {
     }
     const range = clipRangeFor(ex)
     if (!range) {
-      toast.err('请先在时间轴拖出 3～15 秒选区，再做成示范')
+      toast.err(`请先拖出 ${DEMO_MIN_SEC}～${DEMO_MAX_SEC} 秒选区`)
       return
     }
+    if (!assertDemoDuration(range)) return
     setBusy(true)
     try {
       const res = await attachStudioDemo({
@@ -1127,18 +1277,29 @@ export function StudioPage() {
         start: range.start,
         end: range.end,
       })
-      const demoUrl = mediaSrc(res.demo?.demo_url || null)
-      patchExercise(ex.id, {
+      const demoUrl = mediaSrc(res.demo?.demo_url || null) || undefined
+      const coverUrl = mediaSrc(res.demo?.cover_url || null) || undefined
+      if (!demoUrl && !coverUrl) {
+        throw new Error('切片成功但没返回文件地址，请检查 ffmpeg / 存储')
+      }
+      const patched = mapRows(draft, ex.id, {
         exercise_id: exerciseId,
         attach_demo: true,
         replace_demo: true,
         media_status: 'clipped',
+        demo_url: res.demo?.demo_url || null,
+        demo_cover_url: res.demo?.cover_url || null,
         snippet: { ...ex.snippet, start: range.start, end: range.end },
       })
-      if (demoUrl) setClipUrls((p) => ({ ...p, [ex.id]: demoUrl }))
-      toast.ok(
-        '已写入示范小视频+封面（要领默认仅本次；若要进库，在动作卡选「发布时追加/替换」，点底部发布时一并确认）',
-      )
+      setDraft(patched)
+      setClipMeta((p) => ({
+        ...p,
+        [ex.id]: { demo: demoUrl, cover: coverUrl },
+      }))
+      if (demoUrl) setPreviewUrl(demoUrl)
+      // 后端已写回草稿；再 quiet 存一次，防前端草稿与列表不同步
+      await onSaveDraft(patched, true)
+      toast.ok(`「${ex.spoken_name || ex.exercise_name || '该动作'}」示范已生成`)
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '写入示范失败')
     } finally {
@@ -1148,8 +1309,10 @@ export function StudioPage() {
 
   function adoptCandidate(ex: StudioExerciseDraft, hit: StudioMatchCandidate | ExerciseListItem) {
     const score = 'score' in hit && hit.score != null ? Number(hit.score) : 100
-    patchExercise(ex.id, {
-      exercise_id: hit.id,
+    const hitId = String(hit.id)
+    const next: StudioExerciseDraft = {
+      ...ex,
+      exercise_id: hitId,
       exercise_name: hit.name_zh,
       gear: hit.gear || ex.gear,
       target_muscle: hit.muscle || ex.target_muscle,
@@ -1157,19 +1320,36 @@ export function StudioPage() {
       match_confidence: score / 100,
       traffic: 'green',
       media_status: ex.media_status === 'clipped' ? 'clipped' : 'library',
+    }
+    patchExercise(ex.id, {
+      exercise_id: next.exercise_id,
+      exercise_name: next.exercise_name,
+      gear: next.gear,
+      target_muscle: next.target_muscle,
+      match_score: next.match_score,
+      match_confidence: next.match_confidence,
+      traffic: 'green',
+      media_status: next.media_status,
     })
-    setPickerRowId(null)
-    toast.ok(`已选：${hit.name_zh}`)
+    setBindPickerOpen(false)
+    toast.ok(`已对应：${hit.name_zh}`)
+    // 抽屉已开时，绑完立刻拉要领对比
+    if (cueDrawerRowId === ex.id) void openCueDrawer(next)
   }
 
   async function openCueDrawer(ex: StudioExerciseDraft) {
-    if (!ex.exercise_id) {
-      toast.err('请先点选候选绑定动作，再写要领')
+    setCueDrawerRowId(ex.id)
+    setActiveRowId(ex.id)
+    setCueDrawerMode((ex.cue_mode as 'replace' | 'append' | 'none') || 'replace')
+    setBindFilter(ex.spoken_name || ex.exercise_name || '')
+    setBindPickerOpen(!ex.exercise_id)
+    // 未绑定：只开抽屉做绑定，不请求配对
+    if (!ex.exercise_id || activeId == null) {
+      setCuePairs([])
+      setCuePairSummary(null)
+      setCuePairDegraded(false)
       return
     }
-    if (activeId == null) return
-    setCueDrawerRowId(ex.id)
-    setCueDrawerMode((ex.cue_mode as 'replace' | 'append' | 'none') || 'replace')
     setBusy(true)
     try {
       const res = await pairStudioCues({
@@ -1196,33 +1376,7 @@ export function StudioPage() {
     setCuePairs([])
     setCuePairSummary(null)
     setCuePairDegraded(false)
-  }
-
-  async function onExportGif() {
-    if (activeId == null || !sel) return
-    setBusy(true)
-    try {
-      const res = await previewStudioClip(activeId, sel.start, sel.end)
-      const url = mediaSrc(res.demo_url) || undefined
-      setPreviewUrl(url || null)
-      const id = `gif-${Date.now()}`
-      setGifItems((prev) => [
-        ...prev,
-        {
-          id,
-          kind: 'gif',
-          label: `GIF 预览 ${(sel.end - sel.start).toFixed(0)}s`,
-          start: sel.start,
-          end: sel.end,
-          url,
-        },
-      ])
-      toast.ok('已生成预览片段，GIF 导出后续接')
-    } catch (err: unknown) {
-      toast.err(err instanceof Error ? err.message : '预览失败（需 ffmpeg）')
-    } finally {
-      setBusy(false)
-    }
+    setBindPickerOpen(false)
   }
 
   async function onConfirm(publish: boolean) {
@@ -1231,7 +1385,7 @@ export function StudioPage() {
       setPlanInfoOpen(true)
       if (
         !window.confirm(
-          '还没设计划背景图。可在时间轴选区点「设为计划背景」，或在下方「计划信息」上传。仍要继续吗？',
+          '还没设计划封面。可在选区点「设为计划封面」，或在计划信息里上传。仍要继续吗？',
         )
       ) {
         return
@@ -1291,7 +1445,11 @@ export function StudioPage() {
       } else if (status === 'transcribing') cur = 2
       else if (status === 'parsing') cur = 3
       else if (status === 'done') {
-        if (missingSub) {
+        if (taskPublished(task)) {
+          // 全部打勾：当前步停在「发布」且标完成态
+          cur = 4
+          suffix = '已发布'
+        } else if (missingSub) {
           cur = 2
           kind = 'warn'
         } else if (rows.length > 0 && pendingAll === 0) cur = 4
@@ -1301,10 +1459,20 @@ export function StudioPage() {
         }
       } else cur = 1
     }
+    const publishedDone = Boolean(task && status === 'done' && taskPublished(task))
     return (
       <ol className="stepper" aria-label="流水线进度">
         {STEP_LABELS.map((label, i) => {
-          const state = cur < 0 ? 'todo' : i < cur ? 'done' : i === cur ? kind : 'todo'
+          const state =
+            cur < 0
+              ? 'todo'
+              : i < cur
+                ? 'done'
+                : i === cur
+                  ? publishedDone
+                    ? 'done'
+                    : kind
+                  : 'todo'
           const cls = i === cur && state === 'ok' ? 'cur' : state
           return (
             <li key={label} className={`step ${cls}`}>
@@ -1367,11 +1535,15 @@ export function StudioPage() {
                           : '等你补传'
                         : running
                           ? `${percentOf(t)}%${live.speed ? ` · ${live.speed}` : ''}`
-                          : t.status === 'done' && (t.transcript_json?.segments || []).length
-                            ? `${t.exercise_count ?? t.score?.total ?? 0} 个动作`
-                            : t.status === 'done'
-                              ? '装 whisper 后重跑'
-                              : ''}
+                          : taskPublished(t)
+                            ? typeof t.result_ref?.plan_id === 'string'
+                              ? `计划 ${t.result_ref.plan_id}`
+                              : '示范已写入库'
+                            : t.status === 'done' && (t.transcript_json?.segments || []).length
+                              ? `${t.exercise_count ?? t.score?.total ?? 0} 个动作`
+                              : t.status === 'done'
+                                ? '装 whisper 后重跑'
+                                : ''}
                     </span>
                   </span>
                   {running ? (
@@ -1399,19 +1571,22 @@ export function StudioPage() {
     const pct = percentOf(t)
     const stage = stageLabel(live.stage) || statusLabel(t.status)
     const meta = [
-      live.size && `约 ${live.size}`,
+      live.detail,
+      live.size && !live.detail?.includes('句') ? `约 ${live.size}` : '',
       live.speed,
       live.eta && `剩余约 ${live.eta}`,
-      stage,
+      !live.detail ? stage : '',
     ].filter(Boolean)
     const hint =
       t.status === 'transcribing'
-        ? '转字幕中（未装 faster-whisper 会跳过，可先手填）'
+        ? '二十多分钟片在 CPU 上转写可能要好几分钟，进度应显示「已转到 mm:ss」。若长时间停在 40% 不动，多半是旧进程被重启打断了——点下面重跑。'
         : t.status === 'parsing'
           ? '拆计划 / 打分中…'
           : t.status === 'queued'
             ? '排队等待处理…'
             : '这是真实进度，来自下载器的实时输出。'
+    const canRetrySub =
+      (t.status === 'transcribing' || t.status === 'parsing' || t.status === 'queued') && taskHasLocalVideo(t)
     return (
       <div className="card prog" aria-live="polite">
         <div className="card-title">
@@ -1429,6 +1604,16 @@ export function StudioPage() {
           <span className="num prog-pct">{pct}%</span>
         </div>
         <p className="prog-meta num">{meta.length ? meta.join(' · ') : '正在连接并拉取视频…'}</p>
+        {canRetrySub ? (
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            <button type="button" className="btn primary" disabled={busy} onClick={() => void onRetranscribe()}>
+              卡住了？重新转字幕
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => void onSkipTranscribe()}>
+              跳过，手填动作
+            </button>
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -1485,12 +1670,12 @@ export function StudioPage() {
     const selWidth = sel && duration ? ((sel.end - sel.start) / duration) * 100 : 0
     const headLeft = duration ? (curTime / duration) * 100 : 0
     return (
-      <div className="wave-wrap">
+      <div className="wave-wrap" ref={waveWrapRef}>
         <div className="wave-head">
           <span>
             {missingSub
               ? '视频能看，但还没有字幕，暂时无法按句定位'
-              : '拖波形选片段（点一下 = 定位播放头）'}
+              : '拖波形选片段（松手循环播放；点清单会定位到选区）'}
           </span>
           <span className="num">{duration ? `${fmtMmss(duration)} 总长` : '加载中…'}</span>
         </div>
@@ -1532,8 +1717,8 @@ export function StudioPage() {
             {draft.parse_engine === 'llm' ? '动作锚点 · DeepSeek 抽取' : '动作锚点'}
             <em>
               {draft.parse_engine === 'heuristic'
-                ? '（当前是启发式，不是 LLM；可点「用 LLM 重拆」）'
-                : '（≈ 讲到这句的位置，不是示范起点）'}
+                ? '（当前是启发式，不是 LLM；可点「重新拆动作」）'
+                : '（≈ 正式讲/做该动作附近，不是片头报菜名）'}
             </em>
           </div>
           {anchors.length ? (
@@ -1543,7 +1728,7 @@ export function StudioPage() {
                   key={r.ex.id}
                   type="button"
                   className={`chip ${trafficOf(r.ex)}${r.ex.id === activeRowId ? ' on' : ''}`}
-                  onClick={() => activateRow(r.ex)}
+                  onClick={() => focusRow(r.ex)}
                 >
                   <span className="num">{fmtAnchor(at)}</span> {r.ex.spoken_name || r.ex.exercise_name || '未命名'}
                   <span className="num"> {setsText(r.ex)}</span>
@@ -1551,13 +1736,8 @@ export function StudioPage() {
               ))}
             </div>
           ) : (
-            <p className="track-empty">还没有动作锚点。有字幕后点「用 LLM 重拆」。 </p>
+            <p className="track-empty">还没有动作锚点。有字幕后点「重新拆动作」。 </p>
           )}
-          {segments.length ? (
-            <button type="button" className="link track-sublink" onClick={() => setShowTranscript(true)}>
-              口播原文 {segments.length} 段 · 点开下方证据层核对（不再在这里铺一长串字幕 chip）
-            </button>
-          ) : null}
         </div>
 
         <div className="selbar">
@@ -1565,49 +1745,55 @@ export function StudioPage() {
             {sel ? (
               <>
                 选区 {fmtPrecise(sel.start)} → {fmtPrecise(sel.end)}
-                <span className="pill">{(sel.end - sel.start).toFixed(1)}s</span>
+                <span className={`pill${selDurationSec(sel) > DEMO_MAX_SEC || selDurationSec(sel) < DEMO_MIN_SEC ? ' warn' : ''}`}>
+                  {(sel.end - sel.start).toFixed(1)}s
+                </span>
               </>
             ) : (
-              <span className="muted">未选择区间 · 在波形上拖一段</span>
+              <span className="muted">在波形上拖一段</span>
             )}
-            {activeRow ? (
-              <span className="selbar-target">挂到「{activeRow.ex.spoken_name || activeRow.ex.exercise_name}」</span>
-            ) : null}
           </div>
           <div className="selbar-actions">
-            <button type="button" className="btn sm" disabled={!sel} onClick={() => playSelection()}>
-              播这段
-            </button>
-            <button type="button" className="btn sm" disabled={!sel || busy || isExerciseOnly} onClick={() => void onSetCover()}>
-              设封面
+            <button
+              type="button"
+              className="btn sm sel-secondary"
+              disabled={!sel}
+              onClick={() => playSelection(sel, { loop: true })}
+              title="循环播放当前选区"
+            >
+              循环播放
             </button>
             <button
               type="button"
               className="btn sm"
-              disabled={!sel || busy}
-              title="后端暂无真 GIF 导出；会先生成预览片段"
-              onClick={() => void onExportGif()}
+              disabled={!sel}
+              onClick={() => {
+                stopSelLoop()
+                videoRef.current?.pause()
+              }}
             >
-              导 GIF
+              暂停
             </button>
-            <button type="button" className="btn sm accent-fill" disabled={!sel || busy} onClick={() => void onClipOut()}>
-              出库示范
+            <button
+              type="button"
+              className="btn sm sel-primary"
+              disabled={!sel || busy}
+              onClick={() => openDemoPick()}
+            >
+              做成示范视频
             </button>
-            <button type="button" className="link sel-more" onClick={() => setShowSelMore((v) => !v)}>
-              {showSelMore ? '收起' : '更多'}
+            {!isExerciseOnly ? (
+            <button
+              type="button"
+              className="btn sm sel-secondary"
+              disabled={!sel || busy}
+              onClick={() => void onSetPlanCover()}
+            >
+              设为计划封面
             </button>
+            ) : null}
           </div>
         </div>
-        {showSelMore ? (
-          <div className="selbar-secondary">
-            <button type="button" className="btn sm" onClick={setStartFromPlayhead} disabled={!duration}>
-              起点=播放头
-            </button>
-            <button type="button" className="btn sm" onClick={setEndFromPlayhead} disabled={!duration}>
-              终点=播放头
-            </button>
-          </div>
-        ) : null}
         {producedItems.length ? (
           <div className="produced-strip" aria-label="本次产出">
             <span className="produced-label">
@@ -1622,22 +1808,21 @@ export function StudioPage() {
                   className={`produced-chip ${item.kind}`}
                   onClick={() => {
                     if (item.start != null && item.end != null) {
-                      setSel({ start: item.start, end: item.end })
-                      seekTo(item.start)
+                      focusWaveAt({ start: item.start, end: item.end })
                     }
                   }}
                   title={item.label}
                 >
-                  {item.url && item.kind !== 'gif' ? (
+                  {item.url ? (
                     <img src={item.url} alt="" />
                   ) : (
-                    <span className="produced-ico">{item.kind === 'cover' ? '封面' : item.kind === 'gif' ? 'GIF' : '示范'}</span>
+                    <span className="produced-ico">{item.kind === 'cover' ? '封面' : '示范'}</span>
                   )}
                   <em>
                     {item.kind === 'cover'
                       ? '计划封面'
                       : item.start != null && item.end != null
-                        ? `${(item.end - item.start).toFixed(0)}s`
+                        ? `${item.label} · ${(item.end - item.start).toFixed(0)}s`
                         : item.label}
                   </em>
                 </button>
@@ -1655,12 +1840,10 @@ export function StudioPage() {
   function renderTranscript() {
     return (
       <div className={`drawer${showTranscript ? ' open' : ''}`}>
-        <button type="button" className="drawer-head" onClick={() => setShowTranscript((v) => !v)}>
-          <span className="tag amber">原文 · 证据层</span>
-          <span className="muted">
-            {segments.length
-              ? '核对用，不用一直盯稿；点句子可把选区对准这一段'
-              : '没有字幕，这一块是空的'}
+        <button type="button" className="drawer-head transcript-toggle" onClick={() => setShowTranscript((v) => !v)}>
+          <span className="transcript-title">
+            字幕原文
+            {segments.length ? <span className="num"> · {segments.length} 段</span> : null}
           </span>
           <span className="caret">{showTranscript ? '收起' : '展开'}</span>
         </button>
@@ -1724,10 +1907,10 @@ export function StudioPage() {
             <p className="muted">你选了「先停住等我确认」。看一眼画面没问题，再继续转字幕 → 拆计划。</p>
             <div className="btn-row">
               <button type="button" className="btn" disabled={busy} onClick={openRelink}>
-                换链接
+                换视频链接
               </button>
               <button type="button" className="btn" disabled={busy} onClick={() => fallbackRef.current?.click()}>
-                换文件
+                换成本地视频
               </button>
               <button type="button" className="btn primary" disabled={busy} onClick={() => void onContinue()}>
                 确认并继续
@@ -1739,9 +1922,10 @@ export function StudioPage() {
           <div className="panel-head">
             <span>视频预览</span>
             <span className="panel-head-actions">
-              <span className="num">{duration ? `${fmtMmss(duration)} · ` : ''}{task.source_type === 'upload' || !task.source_url ? '本地 MP4' : '已下载'}</span>
-              <button type="button" className="link" onClick={openRelink}>换链接</button>
-              <button type="button" className="link" onClick={() => fallbackRef.current?.click()}>补传文件</button>
+              <span className="num">
+                {duration ? `${fmtMmss(duration)} · ` : ''}
+                {task.source_type === 'upload' || !task.source_url ? '本地视频' : '已下载'}
+              </span>
             </span>
           </div>
           <div className="video-box">
@@ -1752,13 +1936,28 @@ export function StudioPage() {
               controls
               playsInline
               onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+              onPause={() => {
+                if (ignorePauseRef.current) return
+                // 用户点暂停 = 结束循环
+                if (selLoopRef.current) stopSelLoop()
+              }}
               onTimeUpdate={(e) => {
                 const t = e.currentTarget.currentTime
                 setCurTime(t)
-                if (playUntilRef.current != null && t >= playUntilRef.current) {
-                  e.currentTarget.pause()
-                  playUntilRef.current = null
+                const until = playUntilRef.current
+                const range = playRangeRef.current
+                if (until == null || t < until - 0.02) return
+                if (selLoopRef.current && range) {
+                  ignorePauseRef.current = true
+                  e.currentTarget.currentTime = range.start
+                  setCurTime(range.start)
+                  window.setTimeout(() => {
+                    ignorePauseRef.current = false
+                  }, 80)
+                  return
                 }
+                e.currentTarget.pause()
+                stopSelLoop()
               }}
             />
           </div>
@@ -1770,80 +1969,123 @@ export function StudioPage() {
   }
 
   function renderBindBlock(ex: StudioExerciseDraft) {
-    const score = matchScoreOf(ex)
-    const cands = (ex.candidates || []).slice(0, 5)
-    return (
-      <div className="action-card-block">
-        <div className="action-card-k">
-          绑定 <span className="muted">点选即生效 · {score} 分</span>
-        </div>
-        {ex.exercise_id ? (
-          <p className="action-card-v">
-            已选 <span className="num">{ex.exercise_id}</span>
-            {ex.exercise_name ? ` · ${ex.exercise_name}` : ''}
-          </p>
-        ) : (
-          <p className="muted">未选 · 点下面候选，或搜库 / 新建</p>
-        )}
-        {cands.length ? (
-          <ul className="cand-list">
-            {cands.map((c) => {
-              const on = c.id === ex.exercise_id
-              return (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    className={`cand-btn${on ? ' on' : ''}`}
-                    onClick={() => adoptCandidate(ex, c)}
-                  >
-                    <span className="cand-name">{c.name_zh}</span>
-                    <span className="cand-meta">
-                      {c.muscle || ''}
-                      {c.gear ? ` · ${c.gear}` : ''}
-                      {c.has_demo ? ' · 有示范' : ''}
-                      {' · '}
-                      <span className="num">{c.score}</span>分
-                      {c.reason ? ` · ${c.reason}` : ''}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        ) : (
-          <p className="muted tight">库内暂无相近候选 → 可新建</p>
-        )}
-        <div className="ops-line">
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => {
-              setPickerRowId(pickerRowId === ex.id ? null : ex.id)
-              setPickerQ(ex.spoken_name || '')
-            }}
-          >
-            搜库换绑
-          </button>
-          <button type="button" className="btn sm" disabled={busy} onClick={() => void onQuickCreate(ex)}>
-            ＋ 新建动作
-          </button>
-        </div>
-        {pickerRowId === ex.id ? (
-          <div className="picker">
-            <input value={pickerQ} onChange={(e) => setPickerQ(e.target.value)} placeholder="搜动作" autoFocus />
-            <ul>
-              {pickerHits.map((hit) => (
-                <li key={hit.id}>
-                  <button type="button" onClick={() => adoptCandidate(ex, hit)}>
-                    {hit.name_zh}
-                    <span>{hit.muscle}</span>
-                  </button>
-                </li>
-              ))}
-              {pickerQ.trim() && !pickerHits.length ? <li className="muted pad">库里没搜到</li> : null}
-            </ul>
+    const cands = (ex.candidates || []).slice(0, 3)
+    const options: { id: string; name_zh: string; muscle?: string | null; gear?: string | null; score?: number }[] =
+      []
+    const seen = new Set<string>()
+    const pushOpt = (o: {
+      id: string | number
+      name_zh: string
+      muscle?: string | null
+      gear?: string | null
+      score?: number
+    }) => {
+      const id = String(o.id || '').trim()
+      if (!id || seen.has(id)) return
+      options.push({
+        id,
+        name_zh: o.name_zh,
+        muscle: o.muscle,
+        gear: o.gear,
+        score: o.score,
+      })
+      seen.add(id)
+    }
+    // 先搜到的 / 候选，再用草稿当前绑；同 id 只留一条，名字以库为准
+    for (const h of bindHits) pushOpt({ id: h.id, name_zh: h.name_zh, muscle: h.muscle, gear: h.gear })
+    for (const c of cands) pushOpt(c)
+    if (ex.exercise_id) {
+      pushOpt({
+        id: ex.exercise_id,
+        name_zh: ex.exercise_name || String(ex.exercise_id),
+        muscle: ex.target_muscle,
+        gear: ex.gear,
+      })
+    }
+    const boundId = ex.exercise_id ? String(ex.exercise_id) : ''
+    const bound = Boolean(boundId)
+    const showPicker = !bound || bindPickerOpen
+
+    if (!showPicker) {
+      return (
+        <div className="action-card-block bind-sku">
+          <div className="action-card-k">视频里的动作，对应库里哪一条</div>
+          <div className="bind-sku-current">
+            <strong>{ex.exercise_name || boundId}</strong>
+            <span className="muted num"> {boundId}</span>
+            <button type="button" className="btn sm" onClick={() => setBindPickerOpen(true)}>
+              不对，重选
+            </button>
           </div>
-        ) : null}
+        </div>
+      )
+    }
+
+    return (
+      <div className="action-card-block bind-sku">
+        <div className="action-card-k">
+          {bound ? '重选库里对应的动作' : '选库里对应的动作'}
+          {bound ? (
+            <button type="button" className="link bind-sku-cancel" onClick={() => setBindPickerOpen(false)}>
+              取消
+            </button>
+          ) : null}
+        </div>
+        <input
+          className="bind-sku-filter"
+          value={bindFilter}
+          onChange={(e) => setBindFilter(e.target.value)}
+          placeholder="输入名字筛库里动作"
+          autoFocus={bound}
+        />
+        <ul className="bind-sku-list">
+          {!options.length ? <li className="muted pad">库里暂无相关，改关键词或新建</li> : null}
+          {options.map((c) => {
+            const on = c.id === boundId
+            return (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  className={`bind-sku-item${on ? ' on' : ''}`}
+                  onClick={() => {
+                    if (on) {
+                      setBindPickerOpen(false)
+                      return
+                    }
+                    const hit =
+                      bindHits.find((h) => String(h.id) === c.id) ||
+                      cands.find((h) => String(h.id) === c.id) ||
+                      c
+                    adoptCandidate(ex, hit as StudioMatchCandidate | ExerciseListItem)
+                  }}
+                >
+                  <span className="bind-sku-name">
+                    {c.name_zh}
+                    {on ? <em> · 当前</em> : null}
+                  </span>
+                  <span className="bind-sku-meta muted">
+                    {c.muscle || '—'}
+                    <span className="num"> · {c.id}</span>
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+          <li>
+            <button
+              type="button"
+              className="bind-sku-item create"
+              disabled={busy}
+              onClick={() => {
+                void onQuickCreate(ex).then((patch) => {
+                  if (patch) setBindPickerOpen(false)
+                })
+              }}
+            >
+              ＋ 库里没有，新建「{ex.spoken_name || '新动作'}」
+            </button>
+          </li>
+        </ul>
       </div>
     )
   }
@@ -1853,21 +2095,48 @@ export function StudioPage() {
     const tag = mediaTag(r.ex)
     const at = anchorOf(r.ex)
     const on = r.ex.id === activeRowId
-    const cue0 = (r.ex.cues || [])[0]?.text
-    const statusLabelText =
-      t === 'red' ? '库外' : t === 'amber' ? '待候选' : tag.label === '已切 ✓' ? '已切' : tag.label === '用库里' ? '用库里' : '已绑'
     return (
       <li key={r.ex.id} className={`arow${on ? ' on' : ''}`}>
-        <button type="button" className="arow-btn" onClick={() => activateRow(r.ex, { toggle: true })}>
+        <button type="button" className="arow-btn" onClick={() => focusRow(r.ex)} title="定位到视频与波形">
           <span className="arow-n num">{r.n}</span>
           <span className={`dot ${t}`} title={trafficText(t)} />
           <span className="arow-body">
-            <span className="arow-name">{r.ex.spoken_name || r.ex.exercise_name || '未命名'}</span>
-            {cue0 ? <span className="arow-cue">{cue0}</span> : null}
+            <span className="arow-name" title={r.ex.spoken_name || r.ex.exercise_name || '未命名'}>
+              {r.ex.spoken_name || r.ex.exercise_name || '未命名'}
+            </span>
           </span>
           <span className="arow-sets num">{setsText(r.ex)}</span>
           {at !== undefined ? <span className="arow-at num">{fmtAnchor(at)}</span> : null}
-          <span className={`tag ${t === 'red' ? 'red' : t === 'amber' ? 'amber' : tag.cls}`}>{statusLabelText}</span>
+          {tag ? (
+            <span className={`tag ${tag.cls}`} title={tag.label}>
+              {tag.label}
+            </span>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          className="arow-open"
+          title="绑定 / 要领详情"
+          onClick={(e) => {
+            e.stopPropagation()
+            openRowDetail(r.ex)
+          }}
+        >
+          详情
+        </button>
+        <button
+          type="button"
+          className="arow-del"
+          title="从清单删除"
+          aria-label={`删除 ${r.ex.spoken_name || r.ex.exercise_name || '本行'}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            removeExerciseRow(r.ex.id)
+            if (cueDrawerRowId === r.ex.id) closeCueDrawer()
+            if (activeRowId === r.ex.id) setActiveRowId(null)
+          }}
+        >
+          ×
         </button>
       </li>
     )
@@ -1904,12 +2173,12 @@ export function StudioPage() {
             </label>
             <div className="field">
               计划背景图（H5 计划详情顶图）
-              <p className="field-hint muted">时间轴拖选区 →「设为计划背景」，或直接上传本地图。</p>
+              <p className="field-hint muted">选区点「设为计划封面」，或直接上传本地图。</p>
               <div className="cover-row">
                 <input
                   value={draft.cover_url || ''}
                   onChange={(e) => setDraft({ ...draft, cover_url: e.target.value })}
-                  placeholder="https://… 或上传 / 时间轴「设为计划背景」"
+                  placeholder="https://… 或上传 / 选区「设为计划封面」"
                 />
                 <button type="button" className="btn sm" disabled={busy} onClick={() => coverRef.current?.click()}>
                   上传
@@ -1953,9 +2222,20 @@ export function StudioPage() {
 
   function renderFooter() {
     const empty = rows.length === 0
-    const primaryLabel = isExerciseOnly ? '写入动作库' : '发布'
-    const statusText =
-      empty
+    const published = Boolean(task && taskPublished(task))
+    const planId = typeof task?.result_ref?.plan_id === 'string' ? String(task.result_ref.plan_id) : ''
+    const primaryLabel = published
+      ? planId
+        ? '查看计划'
+        : '已写入'
+      : isExerciseOnly
+        ? '写入动作库'
+        : '发布'
+    const statusText = published
+      ? planId
+        ? '已发布，可打开计划页继续改'
+        : '示范已写入动作库'
+      : empty
         ? '还没有动作'
         : pendingAll
           ? `${amberCount} 个待绑定 · ${redCount} 个库外 / 修完才能发布`
@@ -1967,7 +2247,18 @@ export function StudioPage() {
           <button type="button" className="btn" disabled={busy || !task} onClick={() => void onSaveDraft()}>
             存草稿
           </button>
-          <button type="button" className="btn primary" disabled={busy || empty} onClick={() => void onConfirm(true)}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy || empty || (published && !planId)}
+            onClick={() => {
+              if (published && planId) {
+                navigate(`/plans/${encodeURIComponent(planId)}`)
+                return
+              }
+              void onConfirm(true)
+            }}
+          >
             {primaryLabel}
           </button>
         </div>
@@ -2003,12 +2294,12 @@ export function StudioPage() {
     const reparseBtn = hasTranscript ? (
       <button
         type="button"
-        className="btn sm ghost-inline"
+        className="btn sm reparse-btn"
         disabled={busy}
-        title="不重转字幕，只用 DeepSeek 按现有口播重拆"
+        title="不重转字幕：按现有口播，用 AI 重新识别动作清单"
         onClick={() => void onReparse()}
       >
-        LLM 重拆
+        重新拆动作
       </button>
     ) : null
 
@@ -2048,13 +2339,12 @@ export function StudioPage() {
               <strong>动作清单</strong>
               {reparseBtn}
             </div>
-            <p className="muted">仅存动作素材：绑 SKU → 中栏选区「出库示范」→ 写入动作库（不建计划）</p>
+            <p className="muted">仅存动作素材：绑 SKU → 中栏「设为动作示范片段」→ 写入动作库（不建计划）</p>
             <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
             <button type="button" className="btn sm" onClick={addManualRow}>
               ＋ 手动加一行
             </button>
           </div>
-          {activeRow ? renderActionCard(activeRow) : null}
           {renderFooter()}
         </>
       )
@@ -2082,21 +2372,20 @@ export function StudioPage() {
             </strong>
             <span className="muted">
               待处理 {pendingAll}
-              {clippedCount ? ` · 已切 ${clippedCount}` : ''}
+              {clippedCount ? ` · 示范已切 ${clippedCount}` : ''}
             </span>
             {reparseBtn}
           </div>
           <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
           <div className="legend">
-            <span><i className="dot green" /> 绿 · 绑定可信</span>
-            <span><i className="dot amber" /> 黄 · 待候选</span>
-            <span><i className="dot red" /> 红 · 库外</span>
+            <span><i className="dot green" /> 绿 · 已对应库动作</span>
+            <span><i className="dot amber" /> 黄 · 还没选定</span>
+            <span><i className="dot red" /> 红 · 库里没有</span>
           </div>
           <button type="button" className="btn sm" onClick={addManualRow}>
             ＋ 手动加一行
           </button>
         </div>
-        {activeRow ? renderActionCard(activeRow) : null}
         {renderFooter()}
       </>
     )
@@ -2211,46 +2500,80 @@ export function StudioPage() {
         return Math.abs(st - spokenAt) <= 20
       })
       .slice(0, 8)
+    const bound = Boolean(ex.exercise_id)
 
     return (
-      <div className="cue-drawer-root" role="dialog" aria-label="要领对比抽屉">
+      <div className="cue-drawer-root" role="dialog" aria-label="动作详情">
         <button type="button" className="cue-drawer-mask" aria-label="关闭" onClick={closeCueDrawer} />
         <aside className="cue-drawer">
           <header className="cue-drawer-head">
-            <div>
-              <strong>{ex.exercise_name || ex.spoken_name}</strong>
-              <span className="muted num"> {ex.exercise_id}</span>
+            <div className="cue-drawer-titles">
+              <p className="cue-label">库里动作</p>
+              <strong>{ex.exercise_name || '未绑定'}</strong>
+              {ex.exercise_id ? <span className="muted num"> {ex.exercise_id}</span> : null}
+              <p className="cue-label">视频里叫（识别错了可改）</p>
+              <input
+                className="cue-spoken-input"
+                value={ex.spoken_name || ''}
+                placeholder="例如：直臂下压"
+                onChange={(e) => {
+                  const name = e.target.value
+                  patchExercise(ex.id, { spoken_name: name })
+                  setBindFilter(name)
+                  if (!bindPickerOpen) setBindPickerOpen(true)
+                }}
+              />
             </div>
-            <button
-              type="button"
-              className="btn sm"
-              disabled={!ex.exercise_id || renameBusy || !ex.spoken_name}
-              onClick={() => {
-                if (!ex.exercise_id || !ex.spoken_name) return
-                void (async () => {
-                  setRenameBusy(true)
-                  try {
-                    await updateExercise(ex.exercise_id!, { name_zh: ex.spoken_name })
-                    patchExercise(ex.id, { exercise_name: ex.spoken_name })
-                    toast.ok('已改名并对齐叫法（旧名进别名）')
-                  } catch (err: unknown) {
-                    toast.err(err instanceof Error ? err.message : '改名失败')
-                  } finally {
-                    setRenameBusy(false)
-                  }
-                })()
-              }}
-            >
-              改名对齐叫法
-            </button>
-            <button type="button" className="link cue-drawer-x" onClick={closeCueDrawer}>
+            <button type="button" className="link cue-drawer-x" onClick={closeCueDrawer} aria-label="关闭">
               ×
             </button>
           </header>
 
           <div className="cue-drawer-body">
+            <div className="cue-drawer-tools">
+              {bound ? (
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={renameBusy || !ex.spoken_name?.trim() || ex.spoken_name.trim() === ex.exercise_name}
+                  title="把库动作正式名改成上面「视频里叫」"
+                  onClick={() => {
+                    const name = ex.spoken_name?.trim()
+                    if (!ex.exercise_id || !name) return
+                    void (async () => {
+                      setRenameBusy(true)
+                      try {
+                        await updateExercise(ex.exercise_id!, { name_zh: name })
+                        patchExercise(ex.id, { exercise_name: name, spoken_name: name })
+                        toast.ok(`库名已改为「${name}」`)
+                      } catch (err: unknown) {
+                        toast.err(err instanceof Error ? err.message : '改名失败')
+                      } finally {
+                        setRenameBusy(false)
+                      }
+                    })()
+                  }}
+                >
+                  把库名改成上面叫法
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn sm danger"
+                onClick={() => {
+                  removeExerciseRow(ex.id)
+                  closeCueDrawer()
+                }}
+              >
+                从清单移除
+              </button>
+            </div>
+
+            {renderBindBlock(ex)}
+
             <div className="action-card-k">
               要领对比 {cuePairDegraded ? <span className="tag amber">待判断</span> : null}
+              {!bound ? <span className="muted"> · 先选库里动作</span> : null}
             </div>
             <table className="cue-pair-table">
               <thead>
@@ -2321,9 +2644,9 @@ export function StudioPage() {
             <button
               type="button"
               className="btn accent-outline"
-              disabled={busy || cueDrawerMode === 'none'}
+              disabled={busy || !bound || cueDrawerMode === 'none'}
               onClick={() => {
-                if (activeId == null) return
+                if (activeId == null || !bound) return
                 void (async () => {
                   setBusy(true)
                   try {
@@ -2352,7 +2675,7 @@ export function StudioPage() {
             >
               把要领写进库
             </button>
-            <p className="muted tight">不点就只留在这条视频的草稿里</p>
+            <p className="muted tight">{bound ? '不点就只留在这条视频的草稿里' : '先绑定库动作后再写要领'}</p>
 
             <details className="cue-drawer-block">
               <summary>这段原话（只读）</summary>
@@ -2395,6 +2718,53 @@ export function StudioPage() {
   }
 
   /* ── 弹窗 ── */
+
+  function renderDemoPickModal() {
+    if (!sel) return null
+    const list = visibleRows.length ? visibleRows : rows
+    return (
+      <div className="modal-mask" role="dialog" aria-modal="true" aria-label="选择示范挂到哪条动作">
+        <div className="modal">
+          <div className="modal-head">
+            <div>
+              <h2>做成示范视频</h2>
+              <p className="muted">
+                {fmtPrecise(sel.start)} → {fmtPrecise(sel.end)} · {(sel.end - sel.start).toFixed(1)}s
+                （限 {DEMO_MIN_SEC}～{DEMO_MAX_SEC} 秒）· 选挂到哪条动作
+              </p>
+            </div>
+            <button type="button" className="link" onClick={() => setDemoPickOpen(false)} aria-label="关闭">
+              ✕
+            </button>
+          </div>
+          <ul className="demo-pick-list">
+            {list.map((r) => {
+              const name = r.ex.spoken_name || r.ex.exercise_name || `动作 ${r.n}`
+              const bound = r.ex.exercise_name || (r.ex.exercise_id ? `ID ${r.ex.exercise_id}` : '尚未绑库')
+              const preferred = r.ex.id === activeRowId
+              return (
+                <li key={r.ex.id}>
+                  <button
+                    type="button"
+                    className={`demo-pick-btn${preferred ? ' prefer' : ''}`}
+                    disabled={busy}
+                    onClick={() => void attachDemoToRow(r)}
+                  >
+                    <span className="demo-pick-n num">{r.n}</span>
+                    <span className="demo-pick-body">
+                      <strong>{name}</strong>
+                      <em>{bound}</em>
+                    </span>
+                    <span className="demo-pick-go">{preferred ? '当前选中 · 用这条' : '用这条'}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      </div>
+    )
+  }
 
   function renderIngestModal() {
     const canStart =
@@ -2671,9 +3041,11 @@ export function StudioPage() {
     setCurTime(0)
     setActiveRowId(null)
     setPreviewUrl(null)
-    setClipUrls({})
+    setClipMeta({})
     setGifItems([])
-    setPickerRowId(null)
+    setBindFilter('')
+    setBindHits([])
+    setBindPickerOpen(false)
     setDrawerOpen(false)
   }
 
@@ -2695,7 +3067,7 @@ export function StudioPage() {
               ← 回任务列表
             </button>
           ) : null}
-          <button type="button" className="btn primary new-task" onClick={() => void openIngest()}>
+          <button type="button" className="btn new-task" onClick={() => void openIngest()}>
             ＋ 新建任务
           </button>
         </div>
@@ -2723,7 +3095,7 @@ export function StudioPage() {
               {renderRoleTag('ops')}
             </span>
             <span className="num">
-              {task && workbench && status === 'done' ? `${rows.length} 个 · 已切 ${clippedCount}` : '—'}
+              {task && workbench && status === 'done' ? `${rows.length} 个 · 示范已切 ${clippedCount}` : '—'}
             </span>
             <button type="button" className="drawer-close link" onClick={() => setDrawerOpen(false)}>
               收起
@@ -2746,6 +3118,7 @@ export function StudioPage() {
 
       {showIngest ? renderIngestModal() : null}
       {showRelink ? renderRelinkModal() : null}
+      {demoPickOpen ? renderDemoPickModal() : null}
       {renderCueDrawer()}
     </div>
   )

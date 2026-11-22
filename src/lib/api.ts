@@ -666,6 +666,10 @@ export type StudioExerciseDraft = {
   snippet?: { start?: number; end?: number; spoken_at?: number }
   spoken_at?: number
   media_status?: 'uncut' | 'clipped' | 'library' | 'pending_sku' | string
+  /** 示范 MP4（attach-demo 写回草稿，刷新后预览用） */
+  demo_url?: string | null
+  /** 示范封面 JPG（「本次产出」缩略图；勿把 mp4 塞进 img） */
+  demo_cover_url?: string | null
   cues?: StudioEvidenceLine[]
   mistakes?: StudioEvidenceLine[]
   tempo?: string
@@ -802,6 +806,12 @@ export function continueStudioPipeline(taskId: number) {
 
 export function retranscribeStudioTask(taskId: number) {
   return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/retranscribe`, {
+    method: 'POST',
+  })
+}
+
+export function skipStudioTranscribe(taskId: number) {
+  return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/skip-transcribe`, {
     method: 'POST',
   })
 }
