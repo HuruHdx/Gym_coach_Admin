@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CreateExerciseModal } from '../components/CreateExerciseModal'
 import { FilterSelect } from '../components/FilterSelect'
 import {
+  deleteExercise,
   fetchExercises,
   mediaSrc,
   patchReviewFlag,
@@ -11,7 +12,6 @@ import {
 } from '../lib/api'
 import {
   GEARS,
-  MEDIA_STATES,
   MOVEMENT_PATTERNS,
   MUSCLES,
   ROLE_KEYS,
@@ -66,7 +66,6 @@ export function ExercisesPage() {
       sub_region: params.get('sub_region') || undefined,
       gear: params.get('gear') || undefined,
       movement_pattern: params.get('movement_pattern') || undefined,
-      media_state: params.get('media_state') || undefined,
       coach_core: parseBoolParam(params.get('coach_core')),
       needs_review: parseBoolParam(params.get('needs_review')),
       sort,
@@ -156,6 +155,35 @@ export function ExercisesPage() {
     }
   }
 
+  async function onDeleteRow(item: ExerciseListItem, event: MouseEvent) {
+    event.stopPropagation()
+    if (
+      !window.confirm(
+        `删除动作「${item.name_zh}」#${item.id}？\n别名和素材会一起删掉；计划里若引用过会解绑但保留动作名。`,
+      )
+    ) {
+      return
+    }
+    setBusyId(item.id)
+    setError('')
+    try {
+      await deleteExercise(item.id)
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              total: Math.max(0, prev.total - 1),
+              items: prev.items.filter((row) => row.id !== item.id),
+            }
+          : prev,
+      )
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setBusyId('')
+    }
+  }
+
   const total = data?.total ?? 0
   const page = data?.page ?? query.page
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -236,12 +264,6 @@ export function ExercisesPage() {
           onChange={(value) => patchFilters({ gear: value || null })}
         />
         <FilterSelect
-          value={query.media_state || ''}
-          placeholder="素材状态"
-          options={MEDIA_STATES.map((s) => ({ value: s.value, label: s.label }))}
-          onChange={(value) => patchFilters({ media_state: value || null })}
-        />
-        <FilterSelect
           value={query.sort || 'updated_desc'}
           placeholder="排序"
           options={[
@@ -283,7 +305,7 @@ export function ExercisesPage() {
                     <th>5 槽位</th>
                     <th>状态</th>
                     <th>更新</th>
-                    <th>巡检</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -347,14 +369,24 @@ export function ExercisesPage() {
                         </td>
                         <td className="num">{formatUpdatedAt(item.updated_at)}</td>
                         <td>
-                          <button
-                            type="button"
-                            className={`mark-btn ${item.needs_review ? 'on' : ''}`}
-                            disabled={busyId === item.id}
-                            onClick={(e) => toggleReview(item, e)}
-                          >
-                            {item.needs_review ? '取消待修' : '标记待修'}
-                          </button>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className={`mark-btn ${item.needs_review ? 'on' : ''}`}
+                              disabled={busyId === item.id}
+                              onClick={(e) => toggleReview(item, e)}
+                            >
+                              {item.needs_review ? '取消待修' : '标记待修'}
+                            </button>
+                            <button
+                              type="button"
+                              className="mark-btn danger"
+                              disabled={busyId === item.id}
+                              onClick={(e) => void onDeleteRow(item, e)}
+                            >
+                              删除
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )

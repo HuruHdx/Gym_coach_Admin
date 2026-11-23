@@ -244,6 +244,13 @@ export function patchReviewFlag(id: string, needs_review: boolean) {
   )
 }
 
+export function deleteExercise(id: string) {
+  return request<{ ok: boolean; id: string; name_zh?: string }>(
+    `/api/admin/exercises/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export type ExerciseCreatePayload = {
   name_zh: string
   name_en?: string
@@ -771,6 +778,7 @@ export function fetchStudioDeps() {
     yt_dlp: boolean
     ffmpeg: boolean
     faster_whisper: boolean
+    whisper_model?: string | null
     llm?: boolean
     llm_model?: string | null
     cookie_source?: string
@@ -807,6 +815,12 @@ export function continueStudioPipeline(taskId: number) {
 export function retranscribeStudioTask(taskId: number) {
   return request<StudioTask>(`/api/admin/studio/tasks/${taskId}/retranscribe`, {
     method: 'POST',
+  })
+}
+
+export function deleteStudioTask(taskId: number) {
+  return request<{ ok: boolean; id: number }>(`/api/admin/studio/tasks/${taskId}`, {
+    method: 'DELETE',
   })
 }
 
@@ -895,6 +909,8 @@ export type StudioCuePair = {
   relation: 'replace' | 'add' | 'keep' | string
   reason?: string
   pending?: boolean
+  /** cue=发力要点；mistake=常见错误 —— 分列配对，禁止互替 */
+  kind?: 'cue' | 'mistake' | string
 }
 
 export type StudioCuePairResult = {
@@ -925,6 +941,7 @@ export function writeStudioCues(payload: {
   row_id: string
   cue_mode: 'none' | 'append' | 'replace' | string
   pairs?: StudioCuePair[]
+  exercise_id?: string | null
 }) {
   return request<{
     ok: boolean

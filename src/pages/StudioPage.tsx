@@ -5,6 +5,7 @@ import {
   attachStudioDemo,
   confirmStudioPlan,
   continueStudioPipeline,
+  deleteStudioTask,
   fetchExercises,
   fetchStudioCookies,
   fetchStudioDeps,
@@ -43,12 +44,32 @@ const IN_PROGRESS = ['queued', 'downloading', 'transcribing', 'parsing'] as cons
 const STEP_LABELS = ['已入库', '已下载', '字幕', '切动作', '发布'] as const
 const DEMO_MIN_SEC = 2
 const DEMO_MAX_SEC = 15
+/**
+ * 微调窗口：选区大约只占中间 28%，左右留白。
+ * 不再把窗口卡在 90s——选区一长就会铺满整条，两端贴边只能整段拖。
+ */
+function computeZoomView(range: { start: number; end: number }, dur: number) {
+  const selDur = Math.max(0.5, range.end - range.start)
+  const spanTarget = Math.max(20, selDur / 0.28)
+  if (dur <= 0) {
+    const start = Math.max(0, range.start - spanTarget * 0.36)
+    return { start, end: start + spanTarget }
+  }
+  const span = Math.min(dur, spanTarget)
+  const mid = (range.start + range.end) / 2
+  let start = mid - span / 2
+  let end = mid + span / 2
+  if (start < 0) {
+    end = Math.min(dur, end - start)
+    start = 0
+  }
+  if (end > dur) {
+    start = Math.max(0, start - (end - dur))
+    end = dur
+  }
+  return { start, end }
+}
 
-type IngestKind = 'share' | 'direct' | 'file'
-type IngestMode = 'plan_single' | 'plan_merge' | 'exercise_only'
-type ProcessDegree = 'standard' | 'transcript' | 'assets'
-type Traffic = 'red' | 'amber' | 'green'
-type Sel = { start: number; end: number } | null
 type LiveInfo = {
   percent?: number
   size?: string
@@ -458,8 +479,17 @@ export function StudioPage() {
   const coverRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const waveRef = useRef<HTMLDivElement>(null)
+  const zoomWaveRef = useRef<HTMLDivElement>(null)
   const waveWrapRef = useRef<HTMLDivElement>(null)
-  const dragRef = useRef<{ mode: 'start' | 'end' | 'new'; anchor: number; moved: boolean } | null>(null)
+  const dragRef = useRef<{
+    mode: 'start' | 'end' | 'new' | 'move'
+    anchor: number
+    moved: boolean
+    surface: 'overview' | 'zoom'
+    /** move 模式：按下时选区起点 */
+    moveStart0?: number
+    moveEnd0?: number
+  } | null>(null)
   const playUntilRef = useRef<number | null>(null)
   const playRangeRef = useRef<{ start: number; end: number } | null>(null)
   const selLoopRef = useRef(false)
@@ -493,6 +523,7 @@ export function StudioPage() {
     yt_dlp: boolean
     ffmpeg: boolean
     faster_whisper: boolean
+    whisper_model?: string | null
     llm?: boolean
     llm_model?: string | null
   } | null>(null)
@@ -506,6 +537,8 @@ export function StudioPage() {
 
   // 工作台
   const [sel, setSel] = useState<Sel>(null)
+  /** 微调轴窗口（相对总长放大）；拖微调时不随选区抖动重算 */
+  const [zoomView, setZoomView] = useState<{ start: number; end: number } | null>(null)
   const [duration, setDuration] = useState(0)
   const [curTime, setCurTime] = useState(0)
   const [activeRowId, setActiveRowId] = useState<string | null>(null)
@@ -558,6 +591,7 @@ export function StudioPage() {
     setDraft(nextDraft)
     setActiveBlockIdx(-1)
     setSel(null)
+    setZoomView(null)
     setDuration(0)
     setCurTime(0)
     setActiveRowId(null)
@@ -753,14 +787,50 @@ export function StudioPage() {
     playRangeRef.current = null
   }
 
+  function lockZoomAround(range: { start: number; end: number }) {
+    setZoomView(computeZoomView(range, duration > 0 ? duration : range.end + 30))
+  }
+
   /** 点清单：视频 + 波形选区一起定位，并滚到波形 */
   function focusWaveAt(range: { start: number; end: number }) {
     const start = Math.max(0, range.start)
     const end = Math.max(start + 0.3, range.end)
-    setSel({ start, end })
+    const next = { start, end }
+    setSel(next)
+    lockZoomAround(next)
     seekTo(start)
     requestAnimationFrame(() => {
       waveWrapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+  }
+
+  function nudgeSel(edge: 'start' | 'end' | 'both', delta: number) {
+    setSel((prev) => {
+      if (!prev || duration <= 0) return prev
+      if (edge === 'both') {
+        const len = prev.end - prev.start
+        let start = prev.start + delta
+        let end = prev.end + delta
+        if (start < 0) {
+          end = len
+          start = 0
+        }
+        if (end > duration) {
+          end = duration
+          start = Math.max(0, end - len)
+        }
+        if (end - start < 0.3) return prev
+        const next = { start, end }
+        lockZoomAround(next)
+        seekTo(start)
+        return next
+      }
+      if (edge === 'start') {
+        const start = Math.max(0, Math.min(prev.end - 0.3, prev.start + delta))
+        return { start, end: prev.end }
+      }
+      const end = Math.min(duration, Math.max(prev.start + 0.3, prev.end + delta))
+      return { start: prev.start, end }
     })
   }
 
@@ -981,14 +1051,46 @@ export function StudioPage() {
 
   async function onRetranscribe() {
     if (activeId == null) return
+    if (
+      !window.confirm(
+        '用当前语音模型重新转字幕并拆动作？本地视频保留，旧字幕/动作清单会被清掉重跑。',
+      )
+    ) {
+      return
+    }
     setBusy(true)
     try {
       await retranscribeStudioTask(activeId)
       setSkipSubtitle((prev) => ({ ...prev, [activeId]: false }))
       await reloadActive(activeId)
-      toast.ok('已重跑字幕')
+      toast.ok('已开始重跑字幕')
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '重跑字幕失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onDeleteTask(taskId: number, title: string) {
+    if (
+      !window.confirm(
+        `删除任务「${title}」#${taskId}？本地视频会一并删掉；已发布的计划/动作库不会回滚。`,
+      )
+    ) {
+      return
+    }
+    setBusy(true)
+    try {
+      await deleteStudioTask(taskId)
+      if (activeId === taskId) {
+        setActiveId(null)
+        setTask(null)
+        setDraft({ plan_title: '', blocks: [] })
+      }
+      await reloadList()
+      toast.ok('任务已删除')
+    } catch (err: unknown) {
+      toast.err(err instanceof Error ? err.message : '删除失败')
     } finally {
       setBusy(false)
     }
@@ -1146,9 +1248,9 @@ export function StudioPage() {
       })
   }
 
-  /* ── 波形拖拽 ── */
+  /* ── 波形拖拽（总览 + 微调轴） ── */
 
-  function posToSec(clientX: number) {
+  function posToSecOverview(clientX: number) {
     const el = waveRef.current
     if (!el || !duration) return 0
     const rect = el.getBoundingClientRect()
@@ -1156,58 +1258,215 @@ export function StudioPage() {
     return ratio * duration
   }
 
+  function posToSecZoom(clientX: number) {
+    const el = zoomWaveRef.current
+    const zv = zoomView
+    if (!el || !zv || zv.end <= zv.start) return 0
+    const rect = el.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    return zv.start + ratio * (zv.end - zv.start)
+  }
+
+  function relocateSelTo(t: number, len: number) {
+    const L = Math.max(0.3, len)
+    let start = Math.max(0, Math.min(duration - L, t))
+    let end = start + L
+    if (end > duration) {
+      end = duration
+      start = Math.max(0, end - L)
+    }
+    const next = { start, end }
+    setSel(next)
+    lockZoomAround(next)
+    seekTo(start)
+    playSelection(next)
+    return next
+  }
+
   function onWaveDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (!duration || !waveRef.current) return
     e.currentTarget.setPointerCapture(e.pointerId)
     stopSelLoop()
     videoRef.current?.pause()
-    const t = posToSec(e.clientX)
+    const t = posToSecOverview(e.clientX)
     const width = waveRef.current.getBoundingClientRect().width
-    const near = (sec: number) => (Math.abs(t - sec) / duration) * width < 14
-    if (sel && near(sel.start)) dragRef.current = { mode: 'start', anchor: t, moved: false }
-    else if (sel && near(sel.end)) dragRef.current = { mode: 'end', anchor: t, moved: false }
-    else dragRef.current = { mode: 'new', anchor: t, moved: false }
+    // 总览短选区：优先整段拖；两端精修交给下面微调。点空白处松手 = 整段跳过去
+    if (sel) {
+      const selPx = ((sel.end - sel.start) / duration) * width
+      const mid = (sel.start + sel.end) / 2
+      const nearBlob =
+        (Math.abs(t - mid) / duration) * width < Math.max(22, selPx / 2 + 14)
+      if (selPx < 56 && nearBlob) {
+        dragRef.current = {
+          mode: 'move',
+          anchor: t,
+          moved: false,
+          surface: 'overview',
+          moveStart0: sel.start,
+          moveEnd0: sel.end,
+        }
+        return
+      }
+      const hitPx = 16
+      const near = (sec: number) => (Math.abs(t - sec) / duration) * width < hitPx
+      if (selPx >= 56 && near(sel.start) && Math.abs(t - sel.start) <= Math.abs(t - sel.end)) {
+        dragRef.current = { mode: 'start', anchor: t, moved: false, surface: 'overview' }
+        return
+      }
+      if (selPx >= 56 && near(sel.end)) {
+        dragRef.current = { mode: 'end', anchor: t, moved: false, surface: 'overview' }
+        return
+      }
+    }
+    dragRef.current = { mode: 'new', anchor: t, moved: false, surface: 'overview' }
+  }
+
+  function onZoomDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!duration || !zoomView || !sel) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    e.stopPropagation()
+    stopSelLoop()
+    videoRef.current?.pause()
+    const t = posToSecZoom(e.clientX)
+    const width = e.currentTarget.getBoundingClientRect().width
+    const span = Math.max(0.001, zoomView.end - zoomView.start)
+    const px = (sec: number) => ((sec - zoomView.start) / span) * width
+    const distStart = Math.abs(px(sel.start) - (e.clientX - e.currentTarget.getBoundingClientRect().left))
+    const distEnd = Math.abs(px(sel.end) - (e.clientX - e.currentTarget.getBoundingClientRect().left))
+    const hit = 28
+    // 短选区：左半改起点、右半改终点；中间拖 = 整段平移（字幕偏早就往后拖）
+    const inside = t >= sel.start && t <= sel.end
+    const mid = (sel.start + sel.end) / 2
+    if (distStart <= hit && distStart <= distEnd) {
+      dragRef.current = { mode: 'start', anchor: t, moved: false, surface: 'zoom' }
+    } else if (distEnd <= hit) {
+      dragRef.current = { mode: 'end', anchor: t, moved: false, surface: 'zoom' }
+    } else if (inside) {
+      dragRef.current = {
+        mode: 'move',
+        anchor: t,
+        moved: false,
+        surface: 'zoom',
+        moveStart0: sel.start,
+        moveEnd0: sel.end,
+      }
+    } else if (t < mid) {
+      dragRef.current = { mode: 'start', anchor: t, moved: false, surface: 'zoom' }
+    } else {
+      dragRef.current = { mode: 'end', anchor: t, moved: false, surface: 'zoom' }
+    }
   }
 
   function onWaveMove(e: ReactPointerEvent<HTMLDivElement>) {
     const d = dragRef.current
-    if (!d || !duration) return
-    const t = posToSec(e.clientX)
-    if (Math.abs(t - d.anchor) / duration > 0.004) d.moved = true
+    if (!d || !duration || d.surface !== 'overview') return
+    const t = posToSecOverview(e.clientX)
+    if (Math.abs(t - d.anchor) / duration > 0.003) d.moved = true
     if (!d.moved) return
-    // 拖选区时视频跟着 scrub，一眼看到这段是哪一帧
+    if (d.mode === 'move' && d.moveStart0 != null && d.moveEnd0 != null) {
+      const len = d.moveEnd0 - d.moveStart0
+      let start = d.moveStart0 + (t - d.anchor)
+      let end = start + len
+      if (start < 0) {
+        start = 0
+        end = len
+      }
+      if (end > duration) {
+        end = duration
+        start = Math.max(0, end - len)
+      }
+      setSel({ start, end })
+      seekTo(start)
+      return
+    }
     seekTo(t)
     if (d.mode === 'new') {
       setSel({ start: Math.min(d.anchor, t), end: Math.max(d.anchor, t) })
     } else if (d.mode === 'start') {
       setSel((prev) => (prev ? { start: Math.min(t, prev.end - 0.3), end: prev.end } : prev))
-    } else {
+    } else if (d.mode === 'end') {
       setSel((prev) => (prev ? { start: prev.start, end: Math.max(t, prev.start + 0.3) } : prev))
     }
   }
 
-  function onWaveUp(e: ReactPointerEvent<HTMLDivElement>) {
+  function onZoomMove(e: ReactPointerEvent<HTMLDivElement>) {
     const d = dragRef.current
+    if (!d || !duration || d.surface !== 'zoom' || !zoomView) return
+    const t = posToSecZoom(e.clientX)
+    const span = Math.max(0.001, zoomView.end - zoomView.start)
+    if (Math.abs(t - d.anchor) / span > 0.002) d.moved = true
+    if (!d.moved) return
+    if (d.mode === 'move' && d.moveStart0 != null && d.moveEnd0 != null) {
+      const len = d.moveEnd0 - d.moveStart0
+      let start = d.moveStart0 + (t - d.anchor)
+      let end = start + len
+      if (start < 0) {
+        start = 0
+        end = len
+      }
+      if (end > duration) {
+        end = duration
+        start = Math.max(0, end - len)
+      }
+      setSel({ start, end })
+      seekTo(start)
+      return
+    }
+    seekTo(t)
+    if (d.mode === 'new') {
+      setSel({ start: Math.min(d.anchor, t), end: Math.max(d.anchor, t) })
+    } else if (d.mode === 'start') {
+      setSel((prev) => (prev ? { start: Math.min(t, prev.end - 0.3), end: prev.end } : prev))
+    } else if (d.mode === 'end') {
+      setSel((prev) => (prev ? { start: prev.start, end: Math.max(t, prev.start + 0.3) } : prev))
+    }
+  }
+
+  function finishWaveDrag(e: ReactPointerEvent<HTMLDivElement>, surface: 'overview' | 'zoom') {
+    const d = dragRef.current
+    if (!d || d.surface !== surface) return
     dragRef.current = null
-    if (!d) return
+    const readSec = surface === 'zoom' ? posToSecZoom : posToSecOverview
+    const t = readSec(e.clientX)
     if (!d.moved) {
-      // 单击 = 定位播放头
-      seekTo(posToSec(e.clientX))
+      // 总览单击空白：整段跳到这里（长度不变）——偏了整窗时靠这个，不靠下面 ±0.5s
+      if (surface === 'overview' && sel) {
+        const pad = 0.15
+        if (t < sel.start - pad || t > sel.end + pad) {
+          relocateSelTo(t, sel.end - sel.start)
+          return
+        }
+      }
+      seekTo(t)
       return
     }
     if (d.mode === 'new') {
       setSel((prev) => {
-        if (!prev || prev.end - prev.start < 0.5) return null
-        // 松手直接播选区，不用再往下翻点「播这段」
+        if (!prev || prev.end - prev.start < 0.5) {
+          setZoomView(null)
+          return null
+        }
+        lockZoomAround(prev)
         playSelection(prev)
         return prev
       })
       return
     }
     setSel((prev) => {
-      if (prev) playSelection(prev)
+      if (prev) {
+        lockZoomAround(prev)
+        playSelection(prev)
+      }
       return prev
     })
+  }
+
+  function onWaveUp(e: ReactPointerEvent<HTMLDivElement>) {
+    finishWaveDrag(e, 'overview')
+  }
+
+  function onZoomUp(e: ReactPointerEvent<HTMLDivElement>) {
+    finishWaveDrag(e, 'zoom')
   }
 
   /* ── 操作：动作库 ── */
@@ -1321,7 +1580,7 @@ export function StudioPage() {
       traffic: 'green',
       media_status: ex.media_status === 'clipped' ? 'clipped' : 'library',
     }
-    patchExercise(ex.id, {
+    const nextDraft = mapRows(draft, ex.id, {
       exercise_id: next.exercise_id,
       exercise_name: next.exercise_name,
       gear: next.gear,
@@ -1331,10 +1590,46 @@ export function StudioPage() {
       traffic: 'green',
       media_status: next.media_status,
     })
+    setDraft(nextDraft)
     setBindPickerOpen(false)
     toast.ok(`已对应：${hit.name_zh}`)
+    // 立刻落盘，避免写要领时服务端仍显示未绑定
+    if (activeId != null) {
+      void saveStudioDraft(activeId, nextDraft)
+        .then((saved) => setTask(saved))
+        .catch((err: unknown) => {
+          toast.err(err instanceof Error ? err.message : '绑定未保存到服务器')
+        })
+    }
     // 抽屉已开时，绑完立刻拉要领对比
     if (cueDrawerRowId === ex.id) void openCueDrawer(next)
+  }
+
+  function draftCuePreviewPairs(ex: StudioExerciseDraft): StudioCuePair[] {
+    const out: StudioCuePair[] = []
+    for (const item of ex.cues || []) {
+      const text = (typeof item === 'string' ? item : item?.text || '').trim()
+      if (!text) continue
+      out.push({
+        library_cue: null,
+        draft_cue: text,
+        relation: 'add',
+        reason: '视频抽出（未绑库）',
+        kind: 'cue',
+      })
+    }
+    for (const item of ex.mistakes || []) {
+      const text = (typeof item === 'string' ? item : item?.text || '').trim()
+      if (!text) continue
+      out.push({
+        library_cue: null,
+        draft_cue: text,
+        relation: 'add',
+        reason: '视频抽出（未绑库）',
+        kind: 'mistake',
+      })
+    }
+    return out
   }
 
   async function openCueDrawer(ex: StudioExerciseDraft) {
@@ -1343,10 +1638,15 @@ export function StudioPage() {
     setCueDrawerMode((ex.cue_mode as 'replace' | 'append' | 'none') || 'replace')
     setBindFilter(ex.spoken_name || ex.exercise_name || '')
     setBindPickerOpen(!ex.exercise_id)
-    // 未绑定：只开抽屉做绑定，不请求配对
+    // 未绑定：先展示视频抽出的内容；绑上后再配对 / AI 补
     if (!ex.exercise_id || activeId == null) {
-      setCuePairs([])
-      setCuePairSummary(null)
+      const preview = draftCuePreviewPairs(ex)
+      setCuePairs(preview)
+      setCuePairSummary(
+        preview.length
+          ? { replace: 0, add: preview.length, keep: 0, result_total: preview.length }
+          : null,
+      )
       setCuePairDegraded(false)
       return
     }
@@ -1361,6 +1661,11 @@ export function StudioPage() {
       setCuePairSummary(res.summary || null)
       setCuePairDegraded(Boolean(res.degraded))
       if (res.degraded) toast.err('自动配对超时，请人工点选每条「处理」')
+      else if ((res as { engine?: string }).engine === 'ai_suggest') {
+        toast.ok('视频未讲要领，已按动作名 AI 补了几条，可改后再写进库')
+      } else if (!(res.pairs || []).length) {
+        toast.err('没有可写的要领：视频未讲，AI 也未补出——可重开抽屉再试')
+      }
     } catch (err: unknown) {
       setCuePairs([])
       setCuePairSummary(null)
@@ -1515,6 +1820,7 @@ export function StudioPage() {
             const bad = t.status === 'failed' || t.status === 'needs_manual_upload'
             const live = liveOf(t)
             const q = taskQueueLabel(t)
+            const title = taskTitle(t)
             return (
               <li key={t.id}>
                 <button
@@ -1523,7 +1829,7 @@ export function StudioPage() {
                   onClick={() => void selectTask(t.id)}
                 >
                   <span className="qcard-title">
-                    <strong>{taskTitle(t)}</strong>
+                    <strong>{title}</strong>
                     <em className="num">#{t.id}</em>
                   </span>
                   <span className="qcard-meta">
@@ -1579,12 +1885,14 @@ export function StudioPage() {
     ].filter(Boolean)
     const hint =
       t.status === 'transcribing'
-        ? '二十多分钟片在 CPU 上转写可能要好几分钟，进度应显示「已转到 mm:ss」。若长时间停在 40% 不动，多半是旧进程被重启打断了——点下面重跑。'
+        ? '正在转字幕…'
         : t.status === 'parsing'
-          ? '拆计划 / 打分中…'
+          ? '正在拆动作…'
           : t.status === 'queued'
-            ? '排队等待处理…'
-            : '这是真实进度，来自下载器的实时输出。'
+            ? '排队中…'
+            : t.status === 'downloading'
+              ? '正在下载视频…'
+              : ''
     const canRetrySub =
       (t.status === 'transcribing' || t.status === 'parsing' || t.status === 'queued') && taskHasLocalVideo(t)
     return (
@@ -1596,7 +1904,7 @@ export function StudioPage() {
             {stage ? ` · ${stage}` : ''}
           </strong>
         </div>
-        <p className="muted">{hint}</p>
+        {hint ? <p className="muted">{hint}</p> : null}
         <div className="prog-row">
           <div className="bar">
             <i style={{ transform: `scaleX(${Math.max(0.02, pct / 100)})` }} />
@@ -1607,7 +1915,7 @@ export function StudioPage() {
         {canRetrySub ? (
           <div className="btn-row" style={{ marginTop: 12 }}>
             <button type="button" className="btn primary" disabled={busy} onClick={() => void onRetranscribe()}>
-              卡住了？重新转字幕
+              重新转字幕
             </button>
             <button type="button" className="btn" disabled={busy} onClick={() => void onSkipTranscribe()}>
               跳过，手填动作
@@ -1636,9 +1944,7 @@ export function StudioPage() {
         </div>
         <p className="fail-text">{t.error || (subtitleFail ? '转字幕出错' : '下载失败，原因未知。')}</p>
         <p className="muted">
-          {subtitleFail
-            ? '本地视频还在，刷新不会丢。修好后点「重跑字幕」即可，不用重新下载。'
-            : '视频没下下来，但任务保留着，换一条路补上就能继续跑。'}
+          {subtitleFail ? '视频还在，点「重跑字幕」再试。' : '换直链或上传本地文件后继续。'}
         </p>
         <div className="btn-row">
           {subtitleFail ? (
@@ -1669,13 +1975,27 @@ export function StudioPage() {
     const selLeft = sel && duration ? (sel.start / duration) * 100 : 0
     const selWidth = sel && duration ? ((sel.end - sel.start) / duration) * 100 : 0
     const headLeft = duration ? (curTime / duration) * 100 : 0
+    const zv =
+      sel && duration
+        ? zoomView && zoomView.end > zoomView.start
+          ? zoomView
+          : computeZoomView(sel, duration)
+        : null
+    const zSpan = zv ? zv.end - zv.start : 0
+    const zSelLeft = sel && zv && zSpan > 0 ? ((sel.start - zv.start) / zSpan) * 100 : 0
+    const zSelWidth = sel && zv && zSpan > 0 ? ((sel.end - sel.start) / zSpan) * 100 : 0
+    const zHeadLeft = zv && zSpan > 0 ? ((curTime - zv.start) / zSpan) * 100 : 0
+    // 总览只有约 120 根柱，切 90s 只剩几根，拉满后像一整条绿块。微调单独画密一点。
+    const zoomBars = zv
+      ? fauxBars((task?.id || 1) + Math.round(zv.start), 96)
+      : []
     return (
       <div className="wave-wrap" ref={waveWrapRef}>
         <div className="wave-head">
           <span>
             {missingSub
               ? '视频能看，但还没有字幕，暂时无法按句定位'
-              : '拖波形选片段（松手循环播放；点清单会定位到选区）'}
+              : '总览：单击空白=整段跳过去 · 拖绿条=挪位置 · 拖空白=重画选区'}
           </span>
           <span className="num">{duration ? `${fmtMmss(duration)} 总长` : '加载中…'}</span>
         </div>
@@ -1702,7 +2022,7 @@ export function StudioPage() {
             ) : null,
           )}
           {sel && duration ? (
-            <div className="sel" style={{ left: `${selLeft}%`, width: `${selWidth}%` }}>
+            <div className="sel" style={{ left: `${selLeft}%`, width: `${Math.max(selWidth, 0.35)}%` }}>
               <b className="handle l" />
               <b className="handle r" />
             </div>
@@ -1710,6 +2030,84 @@ export function StudioPage() {
           {duration ? <i className="playhead" style={{ left: `${headLeft}%` }} /> : null}
           {missingSub ? <div className="wave-note">有波形但无字幕段</div> : null}
         </div>
+
+        {sel && zv && duration ? (
+          <div className="wave-zoom">
+            <div className="wave-zoom-head">
+              <span>
+                微调 · 选区 {(sel.end - sel.start).toFixed(1)}s
+                <em>
+                  （窗口 {fmtPrecise(zv.start)}–{fmtPrecise(zv.end)} · 拖「起」改开头、「止」改结尾；整段挪位置用上面总览）
+                </em>
+              </span>
+              <button type="button" className="link" onClick={() => lockZoomAround(sel)}>
+                对齐选区
+              </button>
+            </div>
+            <div
+              ref={zoomWaveRef}
+              className="wave zoom"
+              onPointerDown={onZoomDown}
+              onPointerMove={onZoomMove}
+              onPointerUp={onZoomUp}
+              onPointerCancel={onZoomUp}
+            >
+              <div className="bars" aria-hidden="true">
+                {zoomBars.map((h, i) => (
+                  <i key={i} style={{ transform: `scaleY(${h})` }} />
+                ))}
+              </div>
+              {zSelLeft > 0.4 ? (
+                <div className="zoom-shade" style={{ left: 0, width: `${zSelLeft}%` }} />
+              ) : null}
+              <div
+                className="sel"
+                style={{ left: `${zSelLeft}%`, width: `${Math.max(zSelWidth, 2)}%` }}
+              >
+                <b className="handle l">起</b>
+                <b className="handle r">止</b>
+              </div>
+              {zSelLeft + Math.max(zSelWidth, 2) < 99.6 ? (
+                <div
+                  className="zoom-shade"
+                  style={{ left: `${zSelLeft + Math.max(zSelWidth, 2)}%`, right: 0 }}
+                />
+              ) : null}
+              {curTime >= zv.start && curTime <= zv.end ? (
+                <i className="playhead" style={{ left: `${Math.max(0, Math.min(100, zHeadLeft))}%` }} />
+              ) : null}
+            </div>
+            <div className="wave-nudge">
+              <span className="muted">整段大跳</span>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('both', -5)}>
+                ← 5s
+              </button>
+              <button type="button" className="btn sm accent-outline" onClick={() => nudgeSel('both', 5)}>
+                5s →
+              </button>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('both', -0.5)}>
+                ← 0.5
+              </button>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('both', 0.5)}>
+                0.5 →
+              </button>
+              <span className="muted nudge-gap">起点</span>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('start', -0.5)}>
+                −0.5
+              </button>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('start', 0.5)}>
+                +0.5
+              </button>
+              <span className="muted nudge-gap">终点</span>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('end', -0.5)}>
+                −0.5
+              </button>
+              <button type="button" className="btn sm" onClick={() => nudgeSel('end', 0.5)}>
+                +0.5
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="track">
           <div className="track-label">
@@ -2291,6 +2689,18 @@ export function StudioPage() {
     }
 
     const hasTranscript = segments.length > 0 || Boolean(task?.transcript_json?.text)
+    const hasLocalVideo = taskHasLocalVideo(task)
+    const retranscribeBtn = hasLocalVideo ? (
+      <button
+        type="button"
+        className="btn sm"
+        disabled={busy}
+        title="本地视频保留，清空旧字幕后用当前语音模型重转"
+        onClick={() => void onRetranscribe()}
+      >
+        重跑字幕
+      </button>
+    ) : null
     const reparseBtn = hasTranscript ? (
       <button
         type="button"
@@ -2302,6 +2712,12 @@ export function StudioPage() {
         重新拆动作
       </button>
     ) : null
+    const toolBtns = (
+      <span className="btn-row" style={{ gap: 6 }}>
+        {retranscribeBtn}
+        {reparseBtn}
+      </span>
+    )
 
     // 缺字幕 / 没解析出动作
     if (!rows.length) {
@@ -2322,7 +2738,7 @@ export function StudioPage() {
                 <button type="button" className="btn sm" onClick={addManualRow}>
                   ＋ 手动加一行
                 </button>
-                {reparseBtn}
+                {toolBtns}
               </div>
             </div>
           </div>
@@ -2337,7 +2753,7 @@ export function StudioPage() {
           <div className="right-body">
             <div className="section-title">
               <strong>动作清单</strong>
-              {reparseBtn}
+              {toolBtns}
             </div>
             <p className="muted">仅存动作素材：绑 SKU → 中栏「设为动作示范片段」→ 写入动作库（不建计划）</p>
             <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
@@ -2374,7 +2790,7 @@ export function StudioPage() {
               待处理 {pendingAll}
               {clippedCount ? ` · 示范已切 ${clippedCount}` : ''}
             </span>
-            {reparseBtn}
+            {toolBtns}
           </div>
           <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
           <div className="legend">
@@ -2572,9 +2988,12 @@ export function StudioPage() {
             {renderBindBlock(ex)}
 
             <div className="action-card-k">
-              要领对比 {cuePairDegraded ? <span className="tag amber">待判断</span> : null}
+              要领 / 易错对比 {cuePairDegraded ? <span className="tag amber">待判断</span> : null}
               {!bound ? <span className="muted"> · 先选库里动作</span> : null}
             </div>
+            <p className="muted tight">
+              「易错」是类型（进常见错误字段）；右侧「库无」只表示库里还没有这条，不是又当成要点。
+            </p>
             <table className="cue-pair-table">
               <thead>
                 <tr>
@@ -2585,35 +3004,44 @@ export function StudioPage() {
               </thead>
               <tbody>
                 {cuePairs.length ? (
-                  cuePairs.map((p, i) => (
-                    <tr key={i}>
-                      <td className={p.relation === 'replace' ? 'strike muted' : ''}>
-                        {p.library_cue || <span className="muted">库里没有</span>}
-                      </td>
-                      <td>
-                        {p.draft_cue || <span className="muted">—</span>}
-                        {p.relation === 'add' ? <span className="tag amber">新增</span> : null}
-                      </td>
-                      <td>
-                        <select
-                          value={p.relation}
-                          onChange={(e) => {
-                            const next = [...cuePairs]
-                            next[i] = { ...p, relation: e.target.value, pending: false }
-                            setCuePairs(next)
-                          }}
-                        >
-                          <option value="replace">换掉</option>
-                          <option value="keep">保留</option>
-                          <option value="add">新增</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))
+                  cuePairs.map((p, i) => {
+                    const isMistake = String(p.kind || 'cue') === 'mistake'
+                    return (
+                      <tr key={i}>
+                        <td className={p.relation === 'replace' ? 'strike muted' : ''}>
+                          {isMistake ? <span className="tag">易错</span> : null}{' '}
+                          {p.library_cue || <span className="muted">库里没有</span>}
+                        </td>
+                        <td>
+                          {isMistake ? <span className="tag">易错</span> : null}{' '}
+                          {p.draft_cue || <span className="muted">—</span>}
+                          {p.relation === 'add' ? (
+                            <span className="tag amber">{isMistake ? '库无·进易错' : '库无·进要点'}</span>
+                          ) : null}
+                        </td>
+                        <td>
+                          <select
+                            value={p.relation}
+                            onChange={(e) => {
+                              const next = [...cuePairs]
+                              next[i] = { ...p, relation: e.target.value, pending: false }
+                              setCuePairs(next)
+                            }}
+                          >
+                            <option value="replace">{isMistake ? '换掉这条易错' : '换掉'}</option>
+                            <option value="keep">保留库里的</option>
+                            <option value="add">{isMistake ? '补进易错' : '补进要点'}</option>
+                          </select>
+                        </td>
+                      </tr>
+                    )
+                  })
                 ) : (
                   <tr>
                     <td colSpan={3} className="muted">
-                      暂无配对结果
+                      {!bound
+                        ? '这段视频没抽出要点/易错。先在上面点选库动作，绑上后会按动作名 AI 补几条要点。'
+                        : '视频没讲、AI 也没补出。可关抽屉再开一次重试。'}
                     </td>
                   </tr>
                 )}
@@ -2627,19 +3055,32 @@ export function StudioPage() {
               </p>
             ) : null}
 
-            <div className="cue-mode-row">
-              {(['replace', 'append', 'none'] as const).map((m) => (
-                <label key={m} className={`cue-mode-opt${cueDrawerMode === m ? ' on' : ''}`}>
-                  <input
-                    type="radio"
-                    name="cue-mode"
-                    checked={cueDrawerMode === m}
-                    onChange={() => setCueDrawerMode(m)}
-                  />
-                  {cueModeLabel(m)}
-                </label>
-              ))}
-            </div>
+            {bound ? (
+              <>
+                <div className="cue-mode-row">
+                  {(['replace', 'append', 'none'] as const).map((m) => (
+                    <label key={m} className={`cue-mode-opt${cueDrawerMode === m ? ' on' : ''}`}>
+                      <input
+                        type="radio"
+                        name="cue-mode"
+                        checked={cueDrawerMode === m}
+                        onChange={() => setCueDrawerMode(m)}
+                      />
+                      {cueModeLabel(m)}
+                    </label>
+                  ))}
+                </div>
+                <p className="muted tight">
+                  {cueDrawerMode === 'replace'
+                    ? '按表格逐条处理：换/留/补，写进对应字段（要点或常见错误）。'
+                    : cueDrawerMode === 'append'
+                      ? '只把「补进」的写进去，库里已有的不动。'
+                      : '不写库，内容只留在这条视频草稿。'}
+                </p>
+              </>
+            ) : (
+              <p className="muted tight">还没绑库：上面点一个候选（或新建），绑上后才会配对并允许写库。</p>
+            )}
 
             <button
               type="button"
@@ -2655,6 +3096,7 @@ export function StudioPage() {
                       row_id: ex.id,
                       cue_mode: cueDrawerMode,
                       pairs: cuePairs,
+                      exercise_id: ex.exercise_id,
                     })
                     if (!res.ok) {
                       toast.err(res.message || res.reason || '未写入')
@@ -2675,7 +3117,13 @@ export function StudioPage() {
             >
               把要领写进库
             </button>
-            <p className="muted tight">{bound ? '不点就只留在这条视频的草稿里' : '先绑定库动作后再写要领'}</p>
+            <p className="muted tight">
+              {bound
+                ? cuePairs.length
+                  ? '不点就只留在这条视频的草稿里'
+                  : '视频没讲时会按动作名 AI 补要领；仍空可关抽屉再开一次'
+                : '先点选库动作；绑上后若视频没讲，会自动 AI 补要点'}
+            </p>
 
             <details className="cue-drawer-block">
               <summary>这段原话（只读）</summary>
@@ -2911,7 +3359,9 @@ export function StudioPage() {
               {deps?.yt_dlp ? '✓' : '⚠'} yt-dlp{deps && !deps.yt_dlp ? ' 未装' : ''}
             </span>
             <span className={deps?.faster_whisper ? 'dep ok' : 'dep warn'}>
-              {deps?.faster_whisper ? '✓' : '⚠'} faster-whisper{deps && !deps.faster_whisper ? ' 未装' : ''}
+              {deps?.faster_whisper
+                ? `✓ whisper · ${deps.whisper_model || 'small'}`
+                : '⚠ faster-whisper 未装'}
             </span>
             <span className={deps?.ffmpeg ? 'dep ok' : 'dep bad'}>
               {deps?.ffmpeg ? '✓ ffmpeg' : '⚠ ffmpeg 未装 · 音视频合并会失败'}
@@ -2927,9 +3377,11 @@ export function StudioPage() {
           </div>
           {showDepsHelp ? (
             <code className="deps-help">
-              pip install yt-dlp faster-whisper
+              pip install yt-dlp faster-whisper zhconv
               {'\n'}
               ffmpeg 装好后加入 PATH，并重启 API（uvicorn）
+              {'\n'}
+              默认 whisper=small；连不上模型站时自动镜像并回退 base
               {'\n'}
               读 Cookie 前请完全退出所选浏览器，否则可能锁库读不到
             </code>
@@ -3037,6 +3489,7 @@ export function StudioPage() {
     setTask(null)
     setDraft({ plan_title: '', blocks: [] })
     setSel(null)
+    setZoomView(null)
     setDuration(0)
     setCurTime(0)
     setActiveRowId(null)
@@ -3063,9 +3516,24 @@ export function StudioPage() {
         </div>
         <div className="top-actions">
           {task ? (
-            <button type="button" className="btn ghost back-queue" onClick={backToQueue}>
-              ← 回任务列表
-            </button>
+            <>
+              <button type="button" className="btn ghost back-queue" onClick={backToQueue}>
+                ← 回任务列表
+              </button>
+              <button
+                type="button"
+                className="btn sm danger"
+                disabled={busy || (IN_PROGRESS as readonly string[]).includes(task.status)}
+                title={
+                  (IN_PROGRESS as readonly string[]).includes(task.status)
+                    ? '处理中不能删除'
+                    : '删除当前任务'
+                }
+                onClick={() => void onDeleteTask(task.id, taskTitle(task))}
+              >
+                删除任务
+              </button>
+            </>
           ) : null}
           <button type="button" className="btn new-task" onClick={() => void openIngest()}>
             ＋ 新建任务
