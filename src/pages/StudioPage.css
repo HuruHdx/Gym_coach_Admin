@@ -796,9 +796,16 @@
 .studio .wave-head {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 8px;
   color: var(--f-text-3);
   font-size: 12px;
+}
+.studio .wave-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .studio .wave {
@@ -2626,19 +2633,6 @@
   flex: 1;
   min-width: 0;
 }
-.studio .cue-label {
-  margin: 0 0 2px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--f-text-3);
-  letter-spacing: 0.02em;
-}
-.studio .cue-drawer-titles .cue-label + .cue-label {
-  margin-top: 10px;
-}
-.studio .cue-drawer-head strong {
-  font-size: 16px;
-}
 .studio .cue-spoken-input {
   width: 100%;
   box-sizing: border-box;
@@ -2674,6 +2668,22 @@
   flex-direction: column;
   gap: 10px;
 }
+.studio .cue-pair-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.studio .cue-pair-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.studio .cue-pair-section-title {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
 .studio .cue-pair-table {
   width: 100%;
   border-collapse: collapse;
@@ -2692,24 +2702,6 @@
 }
 .studio .cue-pair-table .strike {
   text-decoration: line-through;
-}
-.studio .cue-mode-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.studio .cue-mode-opt {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--f-line);
-  border-radius: 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.studio .cue-mode-opt.on {
-  border-color: var(--f-accent, #2d6a4f);
 }
 .studio .btn.accent-outline {
   border: 1px solid var(--f-accent, #2d6a4f);

@@ -963,11 +963,17 @@ export function attachStudioDemo(payload: {
   exercise_id: string
   start: number
   end: number
+  row_id?: string
 }) {
-  return request<{ ok: boolean; exercise_id: string; demo: { demo_url?: string; cover_url?: string } }>(
-    '/api/admin/studio/attach-demo',
-    { method: 'POST', body: JSON.stringify(payload) },
-  )
+  return request<{
+    ok: boolean
+    exercise_id: string
+    row_id?: string | null
+    demo: { demo_url?: string; cover_url?: string }
+  }>('/api/admin/studio/attach-demo', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function confirmStudioPlan(payload: {

@@ -86,6 +86,8 @@ type ProducedItem = {
   start?: number
   end?: number
   url?: string
+  /** 本次切片钉住的封面/示范，区别于库内旧示范回填 */
+  fromSession?: boolean
 }
 type CookieState = {
   source: 'paste' | 'browser'
@@ -235,7 +237,7 @@ function asDraft(raw: StudioTask['draft_json']): StudioDraft {
   }))
   return {
     plan_title: d.plan_title || '',
-    scene_tag: d.scene_tag || '博主同款',
+    scene_tag: d.scene_tag || '热门计划',
     cover_url: d.cover_url || '',
     mode: d.mode,
     blocks,
@@ -317,6 +319,29 @@ function clipMetaFromDraft(d: StudioDraft): Record<string, { demo?: string; cove
   return out
 }
 
+/** 合并示范缓存：草稿有值优先；本次切片钉住的行不被旧缓存盖掉 */
+function mergeClipMeta(
+  fromDraft: Record<string, { demo?: string; cover?: string }>,
+  prev: Record<string, { demo?: string; cover?: string }>,
+  pins: Record<string, { demo?: string; cover?: string }>,
+): Record<string, { demo?: string; cover?: string }> {
+  const ids = new Set([...Object.keys(fromDraft), ...Object.keys(prev), ...Object.keys(pins)])
+  const out: Record<string, { demo?: string; cover?: string }> = {}
+  for (const id of ids) {
+    const pin = pins[id]
+    if (pin?.demo || pin?.cover) {
+      out[id] = { demo: pin.demo, cover: pin.cover }
+      continue
+    }
+    const d = fromDraft[id]
+    const p = prev[id]
+    const demo = d?.demo || p?.demo
+    const cover = d?.cover || p?.cover
+    if (demo || cover) out[id] = { demo, cover }
+  }
+  return out
+}
+
 function stageLabel(stage?: string) {
   const map: Record<string, string> = {
     downloading: '下载中',
@@ -373,10 +398,35 @@ function trafficText(t: Traffic) {
   return t === 'red' ? '红点 · 库外/新建' : t === 'amber' ? '黄点 · 点选候选即可' : '绿点 · 已绑定'
 }
 
-function cueModeLabel(mode: string | undefined) {
-  if (mode === 'append') return '只加不换'
-  if (mode === 'none') return '不入库'
-  return '按上面的换（默认）'
+/** 名字归一：去空白、小写，用于同名查重（展示仍用原文 + 部位/器械/编号区分） */
+function normExerciseName(name: string | null | undefined) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+}
+
+function summarizeCuePairs(pairs: StudioCuePair[]) {
+  let replace = 0
+  let add = 0
+  let keep = 0
+  let result = 0
+  for (const p of pairs) {
+    const rel = String(p.relation || '')
+    const lib = String(p.library_cue || '').trim()
+    const draft = String(p.draft_cue || '').trim()
+    if (rel === 'replace') {
+      replace += 1
+      if (draft) result += 1
+    } else if (rel === 'add') {
+      add += 1
+      if (draft) result += 1
+    } else {
+      keep += 1
+      if (lib) result += 1
+    }
+  }
+  return { replace, add, keep, result_total: result }
 }
 
 /** 只标示范素材状态；绑定看圆点，不在这里再说「已绑」 */
@@ -495,6 +545,9 @@ export function StudioPage() {
   const selLoopRef = useRef(false)
   const ignorePauseRef = useRef(false)
   const taskRef = useRef<StudioTask | null>(null)
+  const draftRef = useRef<StudioDraft>({ plan_title: '', blocks: [] })
+  /** 本次切片成功后钉住该行封面/示范，防止轮询旧缓存或库内旧图盖住 */
+  const clipPinsRef = useRef<Record<string, { demo?: string; cover?: string }>>({})
 
   const [tasks, setTasks] = useState<StudioTask[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
@@ -543,8 +596,9 @@ export function StudioPage() {
   const [curTime, setCurTime] = useState(0)
   const [activeRowId, setActiveRowId] = useState<string | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  /** 示范产出：缩略图用 cover，预览用 demo */
+  /** 示范产出：缩略图用 cover，预览用 demo；与 clipPinsRef 同步的钉住行 */
   const [clipMeta, setClipMeta] = useState<Record<string, { demo?: string; cover?: string }>>({})
+  const [clipPins, setClipPins] = useState<Record<string, { demo?: string; cover?: string }>>({})
   const [demoPickOpen, setDemoPickOpen] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   const [planInfoOpen, setPlanInfoOpen] = useState(false)
@@ -556,14 +610,7 @@ export function StudioPage() {
   /** 方案 A：要领对比抽屉（与左侧队列 drawer 分开） */
   const [cueDrawerRowId, setCueDrawerRowId] = useState<string | null>(null)
   const [cuePairs, setCuePairs] = useState<StudioCuePair[]>([])
-  const [cuePairSummary, setCuePairSummary] = useState<{
-    replace: number
-    add: number
-    keep?: number
-    result_total: number
-  } | null>(null)
   const [cuePairDegraded, setCuePairDegraded] = useState(false)
-  const [cueDrawerMode, setCueDrawerMode] = useState<'replace' | 'append' | 'none'>('replace')
   const [renameBusy, setRenameBusy] = useState(false)
 
   // 抽屉内：已绑则收起；点「不对，重选」再展开相关列表
@@ -574,6 +621,14 @@ export function StudioPage() {
   useEffect(() => {
     taskRef.current = task
   }, [task])
+
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
+  useEffect(() => {
+    clipPinsRef.current = clipPins
+  }, [clipPins])
 
   /* ── 数据加载 ── */
 
@@ -596,6 +651,8 @@ export function StudioPage() {
     setCurTime(0)
     setActiveRowId(null)
     setPreviewUrl(null)
+    clipPinsRef.current = {}
+    setClipPins({})
     setClipMeta(clipMetaFromDraft(nextDraft))
     setGifItems([])
     setBindFilter('')
@@ -611,7 +668,9 @@ export function StudioPage() {
     if (!prev || prev.id !== id || prev.status !== detail.status || prev.status !== 'done') {
       const nextDraft = asDraft(detail.draft_json)
       setDraft(nextDraft)
-      setClipMeta((prevMeta) => ({ ...clipMetaFromDraft(nextDraft), ...prevMeta }))
+      setClipMeta((prevMeta) =>
+        mergeClipMeta(clipMetaFromDraft(nextDraft), prevMeta, clipPinsRef.current),
+      )
     }
   }, [])
 
@@ -731,7 +790,12 @@ export function StudioPage() {
       if (r.ex.media_status !== 'clipped') continue
       const start = Number(r.ex.snippet?.start ?? 0)
       const end = Number(r.ex.snippet?.end ?? start)
+      const pin = clipPins[r.ex.id]
       const meta = clipMeta[r.ex.id]
+      const draftCover = mediaSrc(r.ex.demo_cover_url || null) || undefined
+      // 本次钉住 > 缓存 > 草稿行；有钉住/草稿 demo_url 视为本次片段
+      const cover = pin?.cover || meta?.cover || draftCover
+      const fromSession = Boolean(pin?.cover || pin?.demo || r.ex.demo_url)
       items.push({
         id: `demo-${r.ex.id}`,
         kind: 'demo',
@@ -739,11 +803,12 @@ export function StudioPage() {
         start,
         end,
         // 必须用封面图；demo 是 mp4，塞进 <img> 会裂图
-        url: meta?.cover || mediaSrc(r.ex.demo_cover_url || null) || undefined,
+        url: cover,
+        fromSession,
       })
     }
     return items
-  }, [draft.cover_url, rows, clipMeta])
+  }, [draft.cover_url, rows, clipMeta, clipPins])
 
   const anchors = useMemo(
     () =>
@@ -1102,9 +1167,12 @@ export function StudioPage() {
     setBusy(true)
     try {
       const next = await skipStudioTranscribe(activeId)
+      const nextDraft = asDraft(next.draft_json)
       setTask(next)
-      setDraft(asDraft(next.draft_json))
-      setClipMeta(clipMetaFromDraft(asDraft(next.draft_json)))
+      setDraft(nextDraft)
+      clipPinsRef.current = {}
+      setClipPins({})
+      setClipMeta(clipMetaFromDraft(nextDraft))
       setSkipSubtitle((prev) => ({ ...prev, [activeId]: true }))
       await reloadList()
       toast.ok('已跳过字幕，可在右栏手填动作')
@@ -1283,6 +1351,14 @@ export function StudioPage() {
     return next
   }
 
+  /** 清空总览选区，再拖即为全新自由选区（不残留旧长度/位置） */
+  function resetSelection() {
+    stopSelLoop()
+    videoRef.current?.pause()
+    setSel(null)
+    setZoomView(null)
+  }
+
   function onWaveDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (!duration || !waveRef.current) return
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -1290,12 +1366,12 @@ export function StudioPage() {
     videoRef.current?.pause()
     const t = posToSecOverview(e.clientX)
     const width = waveRef.current.getBoundingClientRect().width
-    // 总览短选区：优先整段拖；两端精修交给下面微调。点空白处松手 = 整段跳过去
+    // 总览短选区：仅按在绿条附近才整段挪（收窄命中，减少误触）；两端精修交给微调轴
     if (sel) {
       const selPx = ((sel.end - sel.start) / duration) * width
       const mid = (sel.start + sel.end) / 2
       const nearBlob =
-        (Math.abs(t - mid) / duration) * width < Math.max(22, selPx / 2 + 14)
+        (Math.abs(t - mid) / duration) * width < Math.max(10, selPx / 2 + 4)
       if (selPx < 56 && nearBlob) {
         dragRef.current = {
           mode: 'move',
@@ -1473,12 +1549,37 @@ export function StudioPage() {
 
   async function onQuickCreate(ex: StudioExerciseDraft) {
     if (activeId == null) return null
+    const name = (ex.spoken_name || ex.exercise_name || '').trim() || '新动作'
+    const key = normExerciseName(name)
     setBusy(true)
     try {
+      // 新建前查重：同名 / 别名命中则提示直接绑定，避免再造一条
+      try {
+        const found = await fetchExercises({ q: name, page: 1, page_size: 20 })
+        const hit = found.items.find((item) => {
+          if (normExerciseName(item.name_zh) === key) return true
+          return (item.aliases || []).some((a) => normExerciseName(a) === key)
+        })
+        if (hit) {
+          const bind = window.confirm(`库里已有「${hit.name_zh}」#${hit.id}，直接绑定？`)
+          if (bind) {
+            adoptCandidate(ex, hit)
+            setBindPickerOpen(false)
+            return {
+              exercise_id: hit.id,
+              exercise_name: hit.name_zh,
+              traffic: 'green' as const,
+            }
+          }
+          return null
+        }
+      } catch {
+        // 查重失败不拦新建
+      }
       const clipped = ex.media_status === 'clipped'
       const res = await quickCreateStudioExercise({
         task_id: activeId,
-        spoken_name: ex.spoken_name || ex.exercise_name || '新动作',
+        spoken_name: name,
         muscle: ex.target_muscle || '胸',
         gear: ex.gear || undefined,
         role: ex.role || 'isolation',
@@ -1494,7 +1595,7 @@ export function StudioPage() {
         media_status: clipped ? 'clipped' : 'library',
       }
       patchExercise(ex.id, patch)
-      toast.ok(`已新建 SKU：${res.exercise.name_zh}`)
+      toast.ok(`已新建 · ${res.exercise.name_zh}`)
       return patch
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '新建失败')
@@ -1535,13 +1636,15 @@ export function StudioPage() {
         exercise_id: exerciseId,
         start: range.start,
         end: range.end,
+        row_id: ex.id,
       })
       const demoUrl = mediaSrc(res.demo?.demo_url || null) || undefined
       const coverUrl = mediaSrc(res.demo?.cover_url || null) || undefined
       if (!demoUrl && !coverUrl) {
         throw new Error('切片成功但没返回文件地址，请检查 ffmpeg / 存储')
       }
-      const patched = mapRows(draft, ex.id, {
+      const pin = { demo: demoUrl, cover: coverUrl }
+      const patch: Partial<StudioExerciseDraft> = {
         exercise_id: exerciseId,
         attach_demo: true,
         replace_demo: true,
@@ -1549,14 +1652,16 @@ export function StudioPage() {
         demo_url: res.demo?.demo_url || null,
         demo_cover_url: res.demo?.cover_url || null,
         snippet: { ...ex.snippet, start: range.start, end: range.end },
-      })
+      }
+      // 用最新草稿快照，避免闭包旧 draft 把别的编辑盖掉
+      const patched = mapRows(draftRef.current, ex.id, patch)
       setDraft(patched)
-      setClipMeta((p) => ({
-        ...p,
-        [ex.id]: { demo: demoUrl, cover: coverUrl },
-      }))
-      if (demoUrl) setPreviewUrl(demoUrl)
-      // 后端已写回草稿；再 quiet 存一次，防前端草稿与列表不同步
+      clipPinsRef.current = { ...clipPinsRef.current, [ex.id]: pin }
+      setClipPins((p) => ({ ...p, [ex.id]: pin }))
+      setClipMeta((p) => ({ ...p, [ex.id]: pin }))
+      // 预览加时间戳防浏览器沿用旧博主同路径缓存（虽已换 token，双保险）
+      if (demoUrl) setPreviewUrl(`${demoUrl}${demoUrl.includes('?') ? '&' : '?'}v=${Date.now()}`)
+      // 后端已按 row_id 写回；再 quiet 存一次，防前端草稿与列表不同步
       await onSaveDraft(patched, true)
       toast.ok(`「${ex.spoken_name || ex.exercise_name || '该动作'}」示范已生成`)
     } catch (err: unknown) {
@@ -1632,21 +1737,33 @@ export function StudioPage() {
     return out
   }
 
+  function applyAllVideoReplace() {
+    setCuePairs((prev) =>
+      prev.map((p) => {
+        const draft = String(p.draft_cue || '').trim()
+        const lib = String(p.library_cue || '').trim()
+        if (draft && lib) return { ...p, relation: 'replace' as const, pending: false }
+        if (draft) return { ...p, relation: 'add' as const, pending: false }
+        return p
+      }),
+    )
+  }
+
+  function setCuePairRelation(index: number, relation: string) {
+    setCuePairs((prev) =>
+      prev.map((p, i) => (i === index ? { ...p, relation, pending: false } : p)),
+    )
+  }
+
   async function openCueDrawer(ex: StudioExerciseDraft) {
     setCueDrawerRowId(ex.id)
     setActiveRowId(ex.id)
-    setCueDrawerMode((ex.cue_mode as 'replace' | 'append' | 'none') || 'replace')
     setBindFilter(ex.spoken_name || ex.exercise_name || '')
     setBindPickerOpen(!ex.exercise_id)
     // 未绑定：先展示视频抽出的内容；绑上后再配对 / AI 补
     if (!ex.exercise_id || activeId == null) {
       const preview = draftCuePreviewPairs(ex)
       setCuePairs(preview)
-      setCuePairSummary(
-        preview.length
-          ? { replace: 0, add: preview.length, keep: 0, result_total: preview.length }
-          : null,
-      )
       setCuePairDegraded(false)
       return
     }
@@ -1657,18 +1774,17 @@ export function StudioPage() {
         row_id: ex.id,
         exercise_id: ex.exercise_id,
       })
-      setCuePairs(res.pairs || [])
-      setCuePairSummary(res.summary || null)
+      const pairs = res.pairs || []
+      setCuePairs(pairs)
       setCuePairDegraded(Boolean(res.degraded))
       if (res.degraded) toast.err('自动配对超时，请人工点选每条「处理」')
       else if ((res as { engine?: string }).engine === 'ai_suggest') {
         toast.ok('视频未讲要领，已按动作名 AI 补了几条，可改后再写进库')
-      } else if (!(res.pairs || []).length) {
+      } else if (!pairs.length) {
         toast.err('没有可写的要领：视频未讲，AI 也未补出——可重开抽屉再试')
       }
     } catch (err: unknown) {
       setCuePairs([])
-      setCuePairSummary(null)
       setCuePairDegraded(true)
       toast.err(err instanceof Error ? err.message : '配对失败，可人工填写')
     } finally {
@@ -1679,7 +1795,6 @@ export function StudioPage() {
   function closeCueDrawer() {
     setCueDrawerRowId(null)
     setCuePairs([])
-    setCuePairSummary(null)
     setCuePairDegraded(false)
     setBindPickerOpen(false)
   }
@@ -1995,9 +2110,20 @@ export function StudioPage() {
           <span>
             {missingSub
               ? '视频能看，但还没有字幕，暂时无法按句定位'
-              : '总览：单击空白=整段跳过去 · 拖绿条=挪位置 · 拖空白=重画选区'}
+              : '总览：单击空白=整段跳 · 拖绿条=挪 · 拖空白=重画'}
           </span>
-          <span className="num">{duration ? `${fmtMmss(duration)} 总长` : '加载中…'}</span>
+          <span className="wave-head-actions">
+            <button
+              type="button"
+              className="btn sm"
+              disabled={!sel}
+              onClick={resetSelection}
+              title="清空选区，再在总览上拖一段新的"
+            >
+              重置选区
+            </button>
+            <span className="num">{duration ? `${fmtMmss(duration)} 总长` : '加载中…'}</span>
+          </span>
         </div>
         <div
           ref={waveRef}
@@ -2219,9 +2345,11 @@ export function StudioPage() {
                   <em>
                     {item.kind === 'cover'
                       ? '计划封面'
-                      : item.start != null && item.end != null
-                        ? `${item.label} · ${(item.end - item.start).toFixed(0)}s`
-                        : item.label}
+                      : `${item.fromSession ? '本次 · ' : '库内 · '}${item.label}${
+                          item.start != null && item.end != null
+                            ? ` · ${(item.end - item.start).toFixed(0)}s`
+                            : ''
+                        }`}
                   </em>
                 </button>
               ))}
@@ -2366,10 +2494,15 @@ export function StudioPage() {
     )
   }
 
-  function renderBindBlock(ex: StudioExerciseDraft) {
+  function renderBindBlock(ex: StudioExerciseDraft, variant: 'card' | 'drawer' = 'card') {
     const cands = (ex.candidates || []).slice(0, 3)
-    const options: { id: string; name_zh: string; muscle?: string | null; gear?: string | null; score?: number }[] =
-      []
+    const options: {
+      id: string
+      name_zh: string
+      muscle?: string | null
+      gear?: string | null
+      score?: number
+    }[] = []
     const seen = new Set<string>()
     const pushOpt = (o: {
       id: string | number
@@ -2389,7 +2522,7 @@ export function StudioPage() {
       })
       seen.add(id)
     }
-    // 先搜到的 / 候选，再用草稿当前绑；同 id 只留一条，名字以库为准
+    // 搜库结果 + 自动候选 + 当前绑定；同 id 只留一条。同名不同 id 并列，靠部位/器械/编号区分
     for (const h of bindHits) pushOpt({ id: h.id, name_zh: h.name_zh, muscle: h.muscle, gear: h.gear })
     for (const c of cands) pushOpt(c)
     if (ex.exercise_id) {
@@ -2402,17 +2535,24 @@ export function StudioPage() {
     }
     const boundId = ex.exercise_id ? String(ex.exercise_id) : ''
     const bound = Boolean(boundId)
-    const showPicker = !bound || bindPickerOpen
+    // 抽屉未绑时始终展开列表；卡片 / 已绑收起后点重选再展开
+    const showPicker = variant === 'drawer' ? !bound || bindPickerOpen : !bound || bindPickerOpen
 
     if (!showPicker) {
       return (
         <div className="action-card-block bind-sku">
-          <div className="action-card-k">视频里的动作，对应库里哪一条</div>
           <div className="bind-sku-current">
             <strong>{ex.exercise_name || boundId}</strong>
             <span className="muted num"> {boundId}</span>
-            <button type="button" className="btn sm" onClick={() => setBindPickerOpen(true)}>
-              不对，重选
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => {
+                setBindFilter(ex.spoken_name || ex.exercise_name || '')
+                setBindPickerOpen(true)
+              }}
+            >
+              重选
             </button>
           </div>
         </div>
@@ -2422,24 +2562,27 @@ export function StudioPage() {
     return (
       <div className="action-card-block bind-sku">
         <div className="action-card-k">
-          {bound ? '重选库里对应的动作' : '选库里对应的动作'}
+          库动作
           {bound ? (
             <button type="button" className="link bind-sku-cancel" onClick={() => setBindPickerOpen(false)}>
-              取消
+              收起
             </button>
           ) : null}
         </div>
-        <input
-          className="bind-sku-filter"
-          value={bindFilter}
-          onChange={(e) => setBindFilter(e.target.value)}
-          placeholder="输入名字筛库里动作"
-          autoFocus={bound}
-        />
+        {variant === 'card' ? (
+          <input
+            className="bind-sku-filter"
+            value={bindFilter}
+            onChange={(e) => setBindFilter(e.target.value)}
+            placeholder="筛库"
+            autoFocus={bound}
+          />
+        ) : null}
         <ul className="bind-sku-list">
-          {!options.length ? <li className="muted pad">库里暂无相关，改关键词或新建</li> : null}
+          {!options.length ? <li className="muted pad">无匹配</li> : null}
           {options.map((c) => {
             const on = c.id === boundId
+            const meta = [c.muscle, c.gear].filter(Boolean).join(' · ')
             return (
               <li key={c.id}>
                 <button
@@ -2462,7 +2605,7 @@ export function StudioPage() {
                     {on ? <em> · 当前</em> : null}
                   </span>
                   <span className="bind-sku-meta muted">
-                    {c.muscle || '—'}
+                    {meta || '—'}
                     <span className="num"> · {c.id}</span>
                   </span>
                 </button>
@@ -2480,7 +2623,7 @@ export function StudioPage() {
                 })
               }}
             >
-              ＋ 库里没有，新建「{ex.spoken_name || '新动作'}」
+              新建
             </button>
           </li>
         </ul>
@@ -2548,7 +2691,7 @@ export function StudioPage() {
           {coverSrc ? <img className="plan-info-thumb" src={coverSrc} alt="" /> : <span className="plan-info-thumb empty">背景</span>}
           <span>计划信息</span>
           <span className="muted">
-            {draft.plan_title || '未命名计划'} · {draft.scene_tag || '博主同款'}
+            {draft.plan_title || '未命名计划'} · {draft.scene_tag || '热门计划'}
             {draft.cover_url ? ' · 已设背景' : ' · 未设背景图'}
           </span>
           <span className="caret">{planInfoOpen ? '收起' : '展开'}</span>
@@ -2560,13 +2703,16 @@ export function StudioPage() {
               <input value={draft.plan_title || ''} onChange={(e) => setDraft({ ...draft, plan_title: e.target.value })} />
             </label>
             <label className="field">
-              场景标签
+              分类
               <select value={draft.scene_tag || ''} onChange={(e) => setDraft({ ...draft, scene_tag: e.target.value })}>
-                <option value="博主同款">博主同款</option>
-                <option value="三分化">三分化</option>
-                <option value="四分化">四分化</option>
-                <option value="单部位专项">单部位专项</option>
+                <option value="热门计划">热门计划</option>
+                <option value="女性专项">女性专项</option>
                 <option value="新手入门">新手入门</option>
+                <option value="进阶强化">进阶强化</option>
+                <option value="居家训练">居家训练</option>
+                <option value="增肌专项">增肌专项</option>
+                <option value="减脂塑形">减脂塑形</option>
+                <option value="博主同款">博主同款</option>
               </select>
             </label>
             <div className="field">
@@ -2892,7 +3038,7 @@ export function StudioPage() {
             disabled={!ex.exercise_id || busy}
             onClick={() => void openCueDrawer(ex)}
           >
-            打开要领抽屉
+            详情
           </button>
           <button type="button" className="btn danger sm" onClick={() => removeExerciseRow(ex.id)}>
             删除本行
@@ -2924,19 +3070,16 @@ export function StudioPage() {
         <aside className="cue-drawer">
           <header className="cue-drawer-head">
             <div className="cue-drawer-titles">
-              <p className="cue-label">库里动作</p>
-              <strong>{ex.exercise_name || '未绑定'}</strong>
-              {ex.exercise_id ? <span className="muted num"> {ex.exercise_id}</span> : null}
-              <p className="cue-label">视频里叫（识别错了可改）</p>
               <input
                 className="cue-spoken-input"
                 value={ex.spoken_name || ''}
-                placeholder="例如：直臂下压"
+                placeholder="动作名"
+                aria-label="动作名"
                 onChange={(e) => {
                   const name = e.target.value
+                  // 只改本次叫法；同步筛词供下方库动作列表，不自动展开、不改库名
                   patchExercise(ex.id, { spoken_name: name })
                   setBindFilter(name)
-                  if (!bindPickerOpen) setBindPickerOpen(true)
                 }}
               />
             </div>
@@ -2952,16 +3095,17 @@ export function StudioPage() {
                   type="button"
                   className="btn sm"
                   disabled={renameBusy || !ex.spoken_name?.trim() || ex.spoken_name.trim() === ex.exercise_name}
-                  title="把库动作正式名改成上面「视频里叫」"
+                  title="用上面的名字覆盖库正式名，旧名进别名"
                   onClick={() => {
                     const name = ex.spoken_name?.trim()
                     if (!ex.exercise_id || !name) return
+                    if (!window.confirm(`确认把库名改为「${name}」？`)) return
                     void (async () => {
                       setRenameBusy(true)
                       try {
                         await updateExercise(ex.exercise_id!, { name_zh: name })
                         patchExercise(ex.id, { exercise_name: name, spoken_name: name })
-                        toast.ok(`库名已改为「${name}」`)
+                        toast.ok(`库名已改 · ${name}`)
                       } catch (err: unknown) {
                         toast.err(err instanceof Error ? err.message : '改名失败')
                       } finally {
@@ -2970,7 +3114,7 @@ export function StudioPage() {
                     })()
                   }}
                 >
-                  把库名改成上面叫法
+                  同步库名
                 </button>
               ) : null}
               <button
@@ -2981,120 +3125,107 @@ export function StudioPage() {
                   closeCueDrawer()
                 }}
               >
-                从清单移除
+                移除
               </button>
             </div>
 
-            {renderBindBlock(ex)}
+            {renderBindBlock(ex, 'drawer')}
 
             <div className="action-card-k">
-              要领 / 易错对比 {cuePairDegraded ? <span className="tag amber">待判断</span> : null}
-              {!bound ? <span className="muted"> · 先选库里动作</span> : null}
+              要领对比 {cuePairDegraded ? <span className="tag amber">待判断</span> : null}
+              {!bound ? <span className="muted"> · 未绑定</span> : null}
             </div>
-            <p className="muted tight">
-              「易错」是类型（进常见错误字段）；右侧「库无」只表示库里还没有这条，不是又当成要点。
-            </p>
-            <table className="cue-pair-table">
-              <thead>
-                <tr>
-                  <th>库里现在</th>
-                  <th>这次视频</th>
-                  <th>处理</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cuePairs.length ? (
-                  cuePairs.map((p, i) => {
-                    const isMistake = String(p.kind || 'cue') === 'mistake'
-                    return (
-                      <tr key={i}>
-                        <td className={p.relation === 'replace' ? 'strike muted' : ''}>
-                          {isMistake ? <span className="tag">易错</span> : null}{' '}
-                          {p.library_cue || <span className="muted">库里没有</span>}
-                        </td>
-                        <td>
-                          {isMistake ? <span className="tag">易错</span> : null}{' '}
-                          {p.draft_cue || <span className="muted">—</span>}
-                          {p.relation === 'add' ? (
-                            <span className="tag amber">{isMistake ? '库无·进易错' : '库无·进要点'}</span>
-                          ) : null}
-                        </td>
-                        <td>
-                          <select
-                            value={p.relation}
-                            onChange={(e) => {
-                              const next = [...cuePairs]
-                              next[i] = { ...p, relation: e.target.value, pending: false }
-                              setCuePairs(next)
-                            }}
-                          >
-                            <option value="replace">{isMistake ? '换掉这条易错' : '换掉'}</option>
-                            <option value="keep">保留库里的</option>
-                            <option value="add">{isMistake ? '补进易错' : '补进要点'}</option>
-                          </select>
-                        </td>
-                      </tr>
-                    )
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={3} className="muted">
-                      {!bound
-                        ? '这段视频没抽出要点/易错。先在上面点选库动作，绑上后会按动作名 AI 补几条要点。'
-                        : '视频没讲、AI 也没补出。可关抽屉再开一次重试。'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            {cuePairSummary ? (
-              <p className="muted tight">
-                换 {cuePairSummary.replace} · 加 {cuePairSummary.add}
-                {cuePairSummary.keep != null ? ` · 留 ${cuePairSummary.keep}` : ''} → 约{' '}
-                {cuePairSummary.result_total} 条
-              </p>
+
+            {bound && cuePairs.length ? (
+              <div className="cue-pair-toolbar">
+                <button type="button" className="btn sm" disabled={busy} onClick={applyAllVideoReplace}>
+                  一键替换
+                </button>
+              </div>
             ) : null}
 
-            {bound ? (
+            {cuePairs.length ? (
               <>
-                <div className="cue-mode-row">
-                  {(['replace', 'append', 'none'] as const).map((m) => (
-                    <label key={m} className={`cue-mode-opt${cueDrawerMode === m ? ' on' : ''}`}>
-                      <input
-                        type="radio"
-                        name="cue-mode"
-                        checked={cueDrawerMode === m}
-                        onChange={() => setCueDrawerMode(m)}
-                      />
-                      {cueModeLabel(m)}
-                    </label>
-                  ))}
-                </div>
-                <p className="muted tight">
-                  {cueDrawerMode === 'replace'
-                    ? '按表格逐条处理：换/留/补，写进对应字段（要点或常见错误）。'
-                    : cueDrawerMode === 'append'
-                      ? '只把「补进」的写进去，库里已有的不动。'
-                      : '不写库，内容只留在这条视频草稿。'}
-                </p>
+                {(
+                  [
+                    { key: 'cue', title: '要点', rows: cuePairs
+                      .map((p, i) => ({ p, i }))
+                      .filter(({ p }) => String(p.kind || 'cue') !== 'mistake') },
+                    { key: 'mistake', title: '易错', rows: cuePairs
+                      .map((p, i) => ({ p, i }))
+                      .filter(({ p }) => String(p.kind || 'cue') === 'mistake') },
+                  ] as const
+                ).map((section) =>
+                  section.rows.length ? (
+                    <div key={section.key} className="cue-pair-section">
+                      <p className="cue-pair-section-title">{section.title}</p>
+                      <table className="cue-pair-table">
+                        <thead>
+                          <tr>
+                            <th>库里现在</th>
+                            <th>这次视频</th>
+                            <th>处理</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {section.rows.map(({ p, i }) => (
+                            <tr key={`${section.key}-${i}`}>
+                              <td className={p.relation === 'replace' ? 'strike muted' : ''}>
+                                {p.library_cue || <span className="muted">—</span>}
+                              </td>
+                              <td>{p.draft_cue || <span className="muted">—</span>}</td>
+                              <td>
+                                <select
+                                  value={p.relation}
+                                  onChange={(e) => setCuePairRelation(i, e.target.value)}
+                                >
+                                  <option value="replace">换掉</option>
+                                  <option value="keep">保留</option>
+                                  <option value="add">新增</option>
+                                </select>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null,
+                )}
+                {(() => {
+                  const sum = summarizeCuePairs(cuePairs)
+                  return (
+                    <p className="muted tight">
+                      换 {sum.replace} · 加 {sum.add} · 留 {sum.keep} → 库里约 {sum.result_total} 条
+                    </p>
+                  )
+                })()}
               </>
             ) : (
-              <p className="muted tight">还没绑库：上面点一个候选（或新建），绑上后才会配对并允许写库。</p>
+              <p className="muted tight">
+                {!bound
+                  ? '这段视频没抽出要点/易错。先在上面点选库动作，绑上后会按动作名 AI 补几条要点。'
+                  : '视频没讲、AI 也没补出。可关抽屉再开一次重试。'}
+              </p>
             )}
+
+            {!bound ? (
+              <p className="muted tight">还没绑库：上面点一个候选（或新建），绑上后才会配对并允许写库。</p>
+            ) : null}
 
             <button
               type="button"
               className="btn accent-outline"
-              disabled={busy || !bound || cueDrawerMode === 'none'}
+              disabled={busy || !bound || !cuePairs.length}
               onClick={() => {
                 if (activeId == null || !bound) return
                 void (async () => {
                   setBusy(true)
                   try {
+                    // 逐行 relation 已表达换/留/加；写库固定按 replace 口径落字段
                     const res = await writeStudioCues({
                       task_id: activeId,
                       row_id: ex.id,
-                      cue_mode: cueDrawerMode,
+                      cue_mode: 'replace',
                       pairs: cuePairs,
                       exercise_id: ex.exercise_id,
                     })
@@ -3103,24 +3234,26 @@ export function StudioPage() {
                       return
                     }
                     patchExercise(ex.id, {
-                      cue_mode: cueDrawerMode,
-                      cues_library_backup: (res.backup as StudioExerciseDraft['cues_library_backup']) || ex.cues_library_backup,
+                      cue_mode: 'replace',
+                      cues_library_backup:
+                        (res.backup as StudioExerciseDraft['cues_library_backup']) ||
+                        ex.cues_library_backup,
                     })
-                    toast.ok('要领已写进库')
+                    toast.ok('已保存到动作库')
                   } catch (err: unknown) {
-                    toast.err(err instanceof Error ? err.message : '写入失败')
+                    toast.err(err instanceof Error ? err.message : '保存失败')
                   } finally {
                     setBusy(false)
                   }
                 })()
               }}
             >
-              把要领写进库
+              保存编辑
             </button>
             <p className="muted tight">
               {bound
                 ? cuePairs.length
-                  ? '不点就只留在这条视频的草稿里'
+                  ? '不点只留在这次草稿，不会改动作库'
                   : '视频没讲时会按动作名 AI 补要领；仍空可关抽屉再开一次'
                 : '先点选库动作；绑上后若视频没讲，会自动 AI 补要点'}
             </p>
@@ -3141,7 +3274,7 @@ export function StudioPage() {
             </details>
 
             <details className="cue-drawer-block">
-              <summary>历史要领（只读）</summary>
+              <summary>上次被换掉的旧版本，仅供查看</summary>
               {backup ? (
                 <div className="cue-history">
                   <p className="muted tight">
@@ -3149,11 +3282,29 @@ export function StudioPage() {
                       ? `替换于 ${(backup as { replaced_at?: string }).replaced_at}`
                       : '最近一次覆盖前'}
                   </p>
-                  <ul>
-                    {(backup.cues_zh || []).map((t, i) => (
-                      <li key={i}>{t}</li>
-                    ))}
-                  </ul>
+                  {(backup.cues_zh || []).length ? (
+                    <>
+                      <p className="cue-pair-section-title">要点</p>
+                      <ul>
+                        {(backup.cues_zh || []).map((t, i) => (
+                          <li key={`c-${i}`}>{t}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {(backup.common_mistakes_zh || []).length ? (
+                    <>
+                      <p className="cue-pair-section-title">易错</p>
+                      <ul>
+                        {(backup.common_mistakes_zh || []).map((t, i) => (
+                          <li key={`m-${i}`}>{t}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {!(backup.cues_zh || []).length && !(backup.common_mistakes_zh || []).length ? (
+                    <p className="muted">留档为空</p>
+                  ) : null}
                 </div>
               ) : (
                 <p className="muted">还没有覆盖留档</p>
@@ -3494,6 +3645,8 @@ export function StudioPage() {
     setCurTime(0)
     setActiveRowId(null)
     setPreviewUrl(null)
+    clipPinsRef.current = {}
+    setClipPins({})
     setClipMeta({})
     setGifItems([])
     setBindFilter('')

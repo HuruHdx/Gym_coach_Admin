@@ -21,13 +21,16 @@ import {
 import { MUSCLES, PLAN_GEAR_TAGS, PLAN_SLOT_ROLES } from '../lib/exerciseUi'
 import './PlanDetailPage.css'
 
+/** H5 计划库大分组：人群/场景，不是三分化/五分化 */
 const SCENE_TAGS = [
-  '三分化',
-  '四分化',
-  '五分化',
-  '博主同款',
-  '单部位专项',
+  '热门计划',
+  '女性专项',
   '新手入门',
+  '进阶强化',
+  '居家训练',
+  '增肌专项',
+  '减脂塑形',
+  '博主同款',
 ] as const
 
 const TARGET_MUSCLES = ['胸', '背', '肩', '腿', '臂', '核心'] as const
@@ -470,50 +473,27 @@ export function PlanDetailPage() {
         </div>
 
         <div className="meta-grid">
+          <p className="meta-section-title span-all">主信息（H5 列表 / 详情常用）</p>
           <label>
             标题
             <input value={meta.title} onChange={(e) => setMeta({ ...meta, title: e.target.value })} />
           </label>
           <label>
-            副标题
-            <input
-              value={meta.subtitle}
-              onChange={(e) => setMeta({ ...meta, subtitle: e.target.value })}
-            />
-          </label>
-          <label>
-            署名
-            <input value={meta.author} onChange={(e) => setMeta({ ...meta, author: e.target.value })} />
-          </label>
-          <label>
-            角标
-            <input
-              value={meta.badge_label}
-              onChange={(e) => setMeta({ ...meta, badge_label: e.target.value })}
-            />
-          </label>
-          <label>
-            类型
-            <select
-              value={meta.template_type}
-              onChange={(e) => setMeta({ ...meta, template_type: e.target.value })}
-            >
-              <option value="framework">框架型</option>
-              <option value="fixed">成品型</option>
-            </select>
-          </label>
-          <label>
-            场景标签
+            分类
             <select
               value={meta.scene_tag}
               onChange={(e) => setMeta({ ...meta, scene_tag: e.target.value })}
             >
-              <option value="">未设（H5 可兜底派生）</option>
+              <option value="">未设</option>
               {SCENE_TAGS.map((tag) => (
                 <option key={tag} value={tag}>
                   {tag}
                 </option>
               ))}
+              {meta.scene_tag &&
+              !(SCENE_TAGS as readonly string[]).includes(meta.scene_tag) ? (
+                <option value={meta.scene_tag}>{meta.scene_tag}（旧值）</option>
+              ) : null}
             </select>
           </label>
           <label>
@@ -525,24 +505,68 @@ export function PlanDetailPage() {
               <option value="advanced">强化</option>
             </select>
           </label>
-          <label>
-            每周天数
+          <label className="check">
             <input
-              className="num"
-              type="number"
-              min={1}
-              max={7}
-              value={meta.days_per_week}
-              onChange={(e) => setMeta({ ...meta, days_per_week: Number(e.target.value) || 3 })}
+              type="checkbox"
+              checked={meta.is_published}
+              onChange={(e) => setMeta({ ...meta, is_published: e.target.checked })}
+            />
+            已发布
+          </label>
+          <label className="span-all">
+            简介
+            <textarea
+              rows={3}
+              value={meta.description}
+              onChange={(e) => setMeta({ ...meta, description: e.target.value })}
+            />
+          </label>
+          <div className="span-all">
+            <div className="field-label">部位</div>
+            <div className="chip-row">
+              {MUSCLES.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={meta.muscle_tags.includes(m) ? 'on' : ''}
+                  onClick={() => setMeta({ ...meta, muscle_tags: toggleTag(meta.muscle_tags, m) })}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="span-all">
+            <div className="field-label">器械</div>
+            <div className="chip-row">
+              {PLAN_GEAR_TAGS.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  className={meta.gear_tags.includes(g) ? 'on' : ''}
+                  onClick={() => setMeta({ ...meta, gear_tags: toggleTag(meta.gear_tags, g) })}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <p className="meta-section-title span-all">次要</p>
+          <label>
+            角标
+            <input
+              value={meta.badge_label}
+              onChange={(e) => setMeta({ ...meta, badge_label: e.target.value })}
+              placeholder="可选，卡面小标"
             />
           </label>
           <label>
-            排序
+            分化短句
             <input
-              className="num"
-              type="number"
-              value={meta.sort_order}
-              onChange={(e) => setMeta({ ...meta, sort_order: Number(e.target.value) || 0 })}
+              value={meta.split_summary}
+              onChange={(e) => setMeta({ ...meta, split_summary: e.target.value })}
+              placeholder="如：胸 · 背 · 腿"
             />
           </label>
           <label>
@@ -562,58 +586,41 @@ export function PlanDetailPage() {
             />
           </label>
           <label>
-            分化短句
+            每周天数
             <input
-              value={meta.split_summary}
-              onChange={(e) => setMeta({ ...meta, split_summary: e.target.value })}
+              className="num"
+              type="number"
+              min={1}
+              max={7}
+              value={meta.days_per_week}
+              onChange={(e) => setMeta({ ...meta, days_per_week: Number(e.target.value) || 3 })}
             />
           </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={meta.is_published}
-              onChange={(e) => setMeta({ ...meta, is_published: e.target.checked })}
-            />
-            已发布（H5 可见）
-          </label>
-          <label className="span-all">
-            简介
-            <textarea
-              rows={3}
-              value={meta.description}
-              onChange={(e) => setMeta({ ...meta, description: e.target.value })}
-            />
-          </label>
-          <div className="span-all">
-            <div className="field-label">部位标签</div>
-            <div className="chip-row">
-              {MUSCLES.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={meta.muscle_tags.includes(m) ? 'on' : ''}
-                  onClick={() => setMeta({ ...meta, muscle_tags: toggleTag(meta.muscle_tags, m) })}
+
+          <details className="meta-advanced span-all">
+            <summary>高级</summary>
+            <div className="meta-grid meta-advanced-grid">
+              <label>
+                类型
+                <select
+                  value={meta.template_type}
+                  onChange={(e) => setMeta({ ...meta, template_type: e.target.value })}
                 >
-                  {m}
-                </button>
-              ))}
+                  <option value="framework">框架型</option>
+                  <option value="fixed">成品型</option>
+                </select>
+              </label>
+              <label>
+                排序
+                <input
+                  className="num"
+                  type="number"
+                  value={meta.sort_order}
+                  onChange={(e) => setMeta({ ...meta, sort_order: Number(e.target.value) || 0 })}
+                />
+              </label>
             </div>
-          </div>
-          <div className="span-all">
-            <div className="field-label">器械标签</div>
-            <div className="chip-row">
-              {PLAN_GEAR_TAGS.map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  className={meta.gear_tags.includes(g) ? 'on' : ''}
-                  onClick={() => setMeta({ ...meta, gear_tags: toggleTag(meta.gear_tags, g) })}
-                >
-                  {g}
-                </button>
-              ))}
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
