@@ -463,13 +463,20 @@ function roleLabel(role?: string) {
   return role ? map[role] || role : '正式组'
 }
 
+function taskSourceLabel(t: StudioTask) {
+  const path = (t.stored_path || t.source_url || t.source_text || '').split(/[\\/]/).pop() || ''
+  const clean = path.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim()
+  if (!clean) return ''
+  return clean.length > 22 ? `${clean.slice(0, 22)}…` : clean
+}
+
 function taskTitle(t: StudioTask) {
   const d = (t.draft_json || {}) as StudioDraft
   if (d.plan_title) return d.plan_title
   const text = (t.source_text || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim()
   if (text) return text.length > 16 ? `${text.slice(0, 16)}…` : text
-  const path = (t.stored_path || t.source_url || '').split(/[\\/]/).pop() || ''
-  if (path) return path.length > 18 ? `${path.slice(0, 18)}…` : path
+  const path = taskSourceLabel(t)
+  if (path) return path
   return `任务 #${t.id}`
 }
 
@@ -630,6 +637,14 @@ export function StudioPage() {
     clipPinsRef.current = clipPins
   }, [clipPins])
 
+  /** 视频已能播但 React duration 被清成 0 时（同 src 不重挂载、loadedmetadata 不再触发）把总长捞回来 */
+  function syncDurationFromVideo(el: HTMLVideoElement | null | undefined) {
+    const d = el?.duration
+    if (d && Number.isFinite(d) && d > 0) {
+      setDuration((prev) => (Math.abs(prev - d) > 0.05 ? d : prev))
+    }
+  }
+
   /* ── 数据加载 ── */
 
   const reloadList = useCallback(async () => {
@@ -763,6 +778,25 @@ export function StudioPage() {
   const status = task?.status || ''
   const failedState = status === 'failed' || status === 'needs_manual_upload'
   const workbench = Boolean(task && playSrc && !failedState && status !== 'queued' && status !== 'downloading')
+
+  // 切任务 / 存草稿后若 duration 被清掉，视频同 src 不会再派 loadedmetadata，这里兜底同步
+  useEffect(() => {
+    if (!playSrc) {
+      setDuration(0)
+      return
+    }
+    const el = videoRef.current
+    syncDurationFromVideo(el)
+    if (!el) return
+    const onMeta = () => syncDurationFromVideo(el)
+    el.addEventListener('loadedmetadata', onMeta)
+    el.addEventListener('durationchange', onMeta)
+    return () => {
+      el.removeEventListener('loadedmetadata', onMeta)
+      el.removeEventListener('durationchange', onMeta)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playSrc, activeId, workbench])
   const missingSub = Boolean(
     task && workbench && status === 'done' && segments.length === 0,
   )
@@ -1211,6 +1245,12 @@ export function StudioPage() {
     try {
       const saved = await saveStudioDraft(activeId, next)
       setTask(saved)
+      // 已发布时服务端会用 PlanTemplate 标题盖回，避免补示范后仍显示发布前短名
+      const serverDraft = asDraft(saved.draft_json)
+      if (serverDraft.plan_title && serverDraft.plan_title !== (next.plan_title || '')) {
+        setDraft({ ...next, plan_title: serverDraft.plan_title })
+      }
+      void reloadList().catch(() => undefined)
       if (!quiet) toast.ok('草稿已保存')
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '保存失败')
@@ -1839,6 +1879,8 @@ export function StudioPage() {
         toast.ok(`已写入示范 ${res.attached ?? 0} 条`)
       } else if (res.plan_id) {
         toast.ok(`已写入计划 ${res.plan_id}`)
+        await reloadList().catch(() => undefined)
+        if (activeId != null) await selectTask(activeId).catch(() => undefined)
         navigate(`/plans/${encodeURIComponent(res.plan_id)}`)
       }
     } catch (err: unknown) {
@@ -1947,26 +1989,29 @@ export function StudioPage() {
                     <strong>{title}</strong>
                     <em className="num">#{t.id}</em>
                   </span>
-                  <span className="qcard-meta">
-                    <span className={`tag ${q.tone}`}>{q.label}</span>
-                    <span className="qcard-sub num">
-                      {bad
-                        ? t.status === 'failed'
-                          ? '抓取失败'
-                          : '等你补传'
-                        : running
-                          ? `${percentOf(t)}%${live.speed ? ` · ${live.speed}` : ''}`
-                          : taskPublished(t)
-                            ? typeof t.result_ref?.plan_id === 'string'
-                              ? `计划 ${t.result_ref.plan_id}`
-                              : '示范已写入库'
-                            : t.status === 'done' && (t.transcript_json?.segments || []).length
-                              ? `${t.exercise_count ?? t.score?.total ?? 0} 个动作`
-                              : t.status === 'done'
-                                ? '装 whisper 后重跑'
-                                : ''}
+                    <span className="qcard-meta">
+                      <span className={`tag ${q.tone}`}>{q.label}</span>
+                      <span className="qcard-sub num">
+                        {bad
+                          ? t.status === 'failed'
+                            ? '抓取失败'
+                            : '等你补传'
+                          : running
+                            ? `${percentOf(t)}%${live.speed ? ` · ${live.speed}` : ''}`
+                            : taskPublished(t)
+                              ? typeof t.result_ref?.plan_id === 'string'
+                                ? `计划 ${t.result_ref.plan_id}`
+                                : '示范已写入库'
+                              : t.status === 'done' && (t.transcript_json?.segments || []).length
+                                ? `${t.exercise_count ?? t.score?.total ?? 0} 个动作`
+                                : t.status === 'done'
+                                  ? '装 whisper 后重跑'
+                                  : ''}
+                        {!running && !bad && taskSourceLabel(t)
+                          ? ` · ${taskSourceLabel(t)}`
+                          : ''}
+                      </span>
                     </span>
-                  </span>
                   {running ? (
                     <span className="mini-bar">
                       <i style={{ transform: `scaleX(${percentOf(t) / 100})` }} />
@@ -2461,28 +2506,32 @@ export function StudioPage() {
               src={playSrc || undefined}
               controls
               playsInline
-              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+              onLoadedMetadata={(e) => syncDurationFromVideo(e.currentTarget)}
+              onDurationChange={(e) => syncDurationFromVideo(e.currentTarget)}
               onPause={() => {
                 if (ignorePauseRef.current) return
                 // 用户点暂停 = 结束循环
                 if (selLoopRef.current) stopSelLoop()
               }}
               onTimeUpdate={(e) => {
-                const t = e.currentTarget.currentTime
+                const el = e.currentTarget
+                // 总长丢了时靠播放进度捞回，避免波形一直「加载中…」点不动
+                if (!duration) syncDurationFromVideo(el)
+                const t = el.currentTime
                 setCurTime(t)
                 const until = playUntilRef.current
                 const range = playRangeRef.current
                 if (until == null || t < until - 0.02) return
                 if (selLoopRef.current && range) {
                   ignorePauseRef.current = true
-                  e.currentTarget.currentTime = range.start
+                  el.currentTime = range.start
                   setCurTime(range.start)
                   window.setTimeout(() => {
                     ignorePauseRef.current = false
                   }, 80)
                   return
                 }
-                e.currentTarget.pause()
+                el.pause()
                 stopSelLoop()
               }}
             />
