@@ -6,6 +6,7 @@ import {
   confirmStudioPlan,
   continueStudioPipeline,
   deleteStudioTask,
+  fetchAdminPlans,
   fetchExercises,
   fetchStudioCookies,
   fetchStudioDeps,
@@ -27,6 +28,7 @@ import {
   uploadStudioFallback,
   uploadStudioTaskCover,
   writeStudioCues,
+  type AdminPlanListItem,
   type ExerciseListItem,
   type StudioCuePair,
   type StudioDraft,
@@ -611,6 +613,10 @@ export function StudioPage() {
   const [planInfoOpen, setPlanInfoOpen] = useState(false)
   const [activeBlockIdx, setActiveBlockIdx] = useState(-1)
   const [appendPlanId, setAppendPlanId] = useState('')
+  const [appendMode, setAppendMode] = useState<'new' | 'append'>('new')
+  const [planPickQ, setPlanPickQ] = useState('')
+  const [planPickItems, setPlanPickItems] = useState<AdminPlanListItem[]>([])
+  const [planPickBusy, setPlanPickBusy] = useState(false)
   const [skipSubtitle, setSkipSubtitle] = useState<Record<number, boolean>>({})
   const [showWhisperHelp, setShowWhisperHelp] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -673,6 +679,21 @@ export function StudioPage() {
     setBindFilter('')
     setBindHits([])
     setBindPickerOpen(false)
+    setAppendMode('new')
+    setAppendPlanId('')
+    setPlanPickQ('')
+  }, [])
+
+  const loadPlanPicker = useCallback(async (q: string) => {
+    setPlanPickBusy(true)
+    try {
+      const res = await fetchAdminPlans({ q: q.trim() || undefined, page: 1, page_size: 40 })
+      setPlanPickItems(res.items)
+    } catch (err: unknown) {
+      toast.err(err instanceof Error ? err.message : '计划列表加载失败')
+    } finally {
+      setPlanPickBusy(false)
+    }
   }, [])
 
   /** 轮询刷新：只在状态变化 / 仍在处理中时覆盖草稿，避免吞掉人工编辑 */
@@ -773,6 +794,14 @@ export function StudioPage() {
   const clippedCount = useMemo(() => rows.filter((r) => r.ex.media_status === 'clipped').length, [rows])
 
   const isExerciseOnly = task?.mode === 'exercise_only' || draft.mode === 'exercise_only'
+
+  useEffect(() => {
+    if (!planInfoOpen || appendMode !== 'append' || isExerciseOnly) return
+    const t = window.setTimeout(() => {
+      void loadPlanPicker(planPickQ)
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [planInfoOpen, appendMode, planPickQ, loadPlanPicker, isExerciseOnly])
   const segments = task?.transcript_json?.segments || []
   const playSrc = mediaSrc(task?.play_url || task?.stored_path)
   const status = task?.status || ''
@@ -1866,19 +1895,34 @@ export function StudioPage() {
       toast.err(`还有 ${unbound} 个未绑定`)
       return
     }
+    const appendId =
+      !isExerciseOnly && appendMode === 'append' ? appendPlanId.trim() || null : null
+    if (!isExerciseOnly && appendMode === 'append' && !appendId) {
+      toast.err('请先选择要并入的计划')
+      return
+    }
     if (!window.confirm(lines.join('\n'))) return
     setBusy(true)
     try {
+      const appendTitle =
+        appendId != null
+          ? planPickItems.find((p) => p.id === appendId)?.title || appendId
+          : draft.plan_title || '未命名计划'
       const res = await confirmStudioPlan({
         task_id: activeId,
         draft: { ...draft, mode: isExerciseOnly ? 'exercise_only' : draft.mode },
-        append_to_plan_id: isExerciseOnly ? null : appendPlanId.trim() || null,
+        append_to_plan_id: appendId,
         publish: isExerciseOnly ? false : publish,
       })
       if (isExerciseOnly) {
         toast.ok(`已写入示范 ${res.attached ?? 0} 条`)
       } else if (res.plan_id) {
-        toast.ok(`已写入计划 ${res.plan_id}`)
+        const blockN = res.block_ids?.length ?? 0
+        toast.ok(
+          appendId
+            ? `已作为新板块并入《${appendTitle}》`
+            : `已创建《${appendTitle}》${blockN ? ` · ${blockN} 个板块` : ''}`,
+        )
         await reloadList().catch(() => undefined)
         if (activeId != null) await selectTask(activeId).catch(() => undefined)
         navigate(`/plans/${encodeURIComponent(res.plan_id)}`)
@@ -2780,10 +2824,69 @@ export function StudioPage() {
               </div>
               {coverSrc ? <img className="cover-preview" src={coverSrc} alt="" /> : null}
             </div>
-            <label className="field">
-              并入已有计划 ID（可选）
-              <input value={appendPlanId} placeholder="例如 three-split-classic" onChange={(e) => setAppendPlanId(e.target.value)} />
-            </label>
+            <div className="field">
+              发布去向
+              <div className="choice-grid" style={{ marginTop: 6 }}>
+                <button
+                  type="button"
+                  className={`choice sm${appendMode === 'new' ? ' on' : ''}`}
+                  onClick={() => {
+                    setAppendMode('new')
+                    setAppendPlanId('')
+                  }}
+                >
+                  <strong>新建一套</strong>
+                  <span>用上面的计划名单独发布</span>
+                </button>
+                <button
+                  type="button"
+                  className={`choice sm${appendMode === 'append' ? ' on' : ''}`}
+                  onClick={() => setAppendMode('append')}
+                >
+                  <strong>并入已有</strong>
+                  <span>作为新板块挂到分化计划</span>
+                </button>
+              </div>
+            </div>
+            {appendMode === 'append' ? (
+              <div className="field">
+                选择计划
+                <input
+                  value={planPickQ}
+                  onChange={(e) => setPlanPickQ(e.target.value)}
+                  placeholder="搜标题…"
+                />
+                <p className="field-hint muted">
+                  {planPickBusy
+                    ? '加载中…'
+                    : appendPlanId
+                      ? `已选：${planPickItems.find((p) => p.id === appendPlanId)?.title || appendPlanId}`
+                      : '点下面一项并入'}
+                </p>
+                <ul className="plan-pick-list">
+                  {planPickItems.length === 0 && !planPickBusy ? (
+                    <li className="muted">没有匹配的计划</li>
+                  ) : (
+                    planPickItems.map((p) => (
+                      <li key={p.id}>
+                        <button
+                          type="button"
+                          className={`plan-pick-item${appendPlanId === p.id ? ' on' : ''}`}
+                          onClick={() => setAppendPlanId(p.id)}
+                        >
+                          <strong>{p.title}</strong>
+                          <span className="muted">
+                            {p.block_count} 板块
+                            {p.scene_tag ? ` · ${p.scene_tag}` : ''}
+                            {p.is_published ? '' : ' · 草稿'}
+                          </span>
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

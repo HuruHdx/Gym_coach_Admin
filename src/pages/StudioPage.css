@@ -2287,6 +2287,50 @@
 .studio .choice.sm {
   padding: 10px 12px;
 }
+.studio .plan-pick-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--f-line);
+  border-radius: 8px;
+}
+.studio .plan-pick-list > li {
+  border-bottom: 1px solid var(--f-line);
+}
+.studio .plan-pick-list > li:last-child {
+  border-bottom: 0;
+}
+.studio .plan-pick-list > li.muted {
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.studio .plan-pick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.studio .plan-pick-item strong {
+  font-size: 13px;
+}
+.studio .plan-pick-item span {
+  font-size: 11px;
+}
+.studio .plan-pick-item.on {
+  background: color-mix(in srgb, var(--f-accent) 12%, transparent);
+}
+.studio .plan-pick-item.on strong {
+  color: var(--f-accent);
+}
 .studio .num-badge {
   display: inline-grid;
   place-items: center;
