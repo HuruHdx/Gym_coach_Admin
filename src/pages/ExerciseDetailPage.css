@@ -99,6 +99,27 @@
   line-height: 1;
 }
 
+.ex-detail .variant-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ex-detail .variant-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #e5e2ef);
+  background: var(--elevated, #fff);
+  color: var(--accent-text, #5b4bb7);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.ex-detail .variant-link:hover {
+  border-color: var(--accent-text, #5b4bb7);
+}
 .ex-detail .sub {
   margin-top: var(--sp-2);
   color: var(--text-2);

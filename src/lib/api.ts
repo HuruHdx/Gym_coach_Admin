@@ -46,6 +46,10 @@ export type ExerciseListItem = {
   media_state: string
   risk: RiskInfo
   enriched: boolean
+  is_female_variant?: boolean
+  has_female_variant?: boolean
+  female_variant?: string | null
+  variant_of?: string | null
   updated_at: string | null
 }
 
@@ -117,6 +121,12 @@ export type ExerciseDetail = {
   description_zh: string | null
   aliases: string[]
   slots: ExerciseSlot[]
+  /** 男版指向女版 id */
+  female_variant?: string | null
+  female_variant_name?: string | null
+  /** 女版指向男版 id */
+  variant_of?: string | null
+  variant_of_name?: string | null
   updated_at: string | null
 }
 
@@ -652,6 +662,18 @@ export type StudioMatchCandidate = {
   has_demo?: boolean
   score: number
   reason?: string
+  is_female_variant?: boolean
+  has_female_variant?: boolean
+  female_variant?: string | null
+  variant_of?: string | null
+  prefer_derive_female?: boolean
+}
+
+export type StudioExerciseEvidence = {
+  seg_index?: number | null
+  text?: string | null
+  start?: number | null
+  end?: number | null
 }
 
 export type StudioExerciseDraft = {
@@ -662,6 +684,13 @@ export type StudioExerciseDraft = {
   target_muscle?: string | null
   gear?: string | null
   role?: string
+  /** teaching / warmup；example·recall·intro 后端已滤 */
+  scene?: string | null
+  /** 与灯色独立：缺证据 / 启发式兜底 / 选区重叠等 */
+  suspect?: boolean
+  suspect_reason?: string | null
+  /** 支撑原话（句号 + 原文 + 时间） */
+  evidence?: StudioExerciseEvidence | null
   target_sets?: number | null
   target_reps?: string | null
   sets_from_transcript?: boolean
@@ -684,6 +713,8 @@ export type StudioExerciseDraft = {
   traffic?: 'red' | 'amber' | 'green' | string
   replace_demo?: boolean
   attach_demo?: boolean
+  /** 发布时是否把示范写入动作库 SKU；默认 false=只跟计划行 */
+  write_library?: boolean
   /** none=仅本次；append=发布时追加；replace=发布时替换（可还原） */
   cue_mode?: 'none' | 'append' | 'replace' | string
   cues_library_backup?: {
@@ -903,6 +934,34 @@ export function quickCreateStudioExercise(payload: {
   )
 }
 
+export function deriveStudioFemaleVariant(payload: {
+  task_id: number
+  source_exercise_id: string
+  row_id?: string | null
+  copy_cues?: boolean
+}) {
+  return request<{
+    exercise: ExerciseDetail
+    created: boolean
+    reason?: string
+    draft_patched?: boolean
+  }>('/api/admin/studio/derive-female-variant', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deriveFemaleExercise(sourceId: string, copyCues = true) {
+  const q = copyCues ? '' : '?copy_cues=false'
+  return request<{
+    exercise: ExerciseDetail
+    created: boolean
+    reason?: string
+  }>(`/api/admin/exercises/${encodeURIComponent(sourceId)}/derive-female${q}`, {
+    method: 'POST',
+  })
+}
+
 export type StudioCuePair = {
   library_cue?: string | null
   draft_cue?: string | null
@@ -964,11 +1023,14 @@ export function attachStudioDemo(payload: {
   start: number
   end: number
   row_id?: string
+  /** true=写入动作库 SKU；默认 false 只挂本计划/草稿行 */
+  write_to_library?: boolean
 }) {
   return request<{
     ok: boolean
     exercise_id: string
     row_id?: string | null
+    write_to_library?: boolean
     demo: { demo_url?: string; cover_url?: string }
   }>('/api/admin/studio/attach-demo', {
     method: 'POST',
@@ -980,6 +1042,8 @@ export function confirmStudioPlan(payload: {
   task_id: number
   draft?: StudioDraft
   append_to_plan_id?: string | null
+  /** 多条合成一套：其它可发布任务 id（不含当前 task_id） */
+  merge_task_ids?: number[] | null
   publish?: boolean
 }) {
   return request<{
@@ -988,6 +1052,7 @@ export function confirmStudioPlan(payload: {
     block_ids: number[]
     attached?: number
     cues_synced?: number
+    merged_task_ids?: number[]
   }>('/api/admin/studio/confirm-plan', {
     method: 'POST',
     body: JSON.stringify(payload),

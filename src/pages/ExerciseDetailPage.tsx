@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ImageCropModal } from '../components/ImageCropModal'
 import {
   clearExerciseSlot,
+  deriveFemaleExercise,
   fetchAiDraft,
   fetchExerciseDetail,
   mediaSrc,
@@ -90,6 +91,7 @@ export function ExerciseDetailPage() {
   const [autoFlip, setAutoFlip] = useState(false)
   const [publishOnUpload, setPublishOnUpload] = useState(true)
   const [cropFile, setCropFile] = useState<File | null>(null)
+  const [deriveBusy, setDeriveBusy] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -323,6 +325,30 @@ export function ExerciseDetailPage() {
     }
   }
 
+  async function onDeriveFemale() {
+    if (!data) return
+    if (data.variant_of) {
+      setNotice('当前已是女版，请到男版去派生')
+      return
+    }
+    if (data.female_variant) {
+      navigate(`/exercises/${encodeURIComponent(data.female_variant)}`)
+      return
+    }
+    if (!window.confirm(`从「${data.name_zh}」派生女版？复制分类 / 要领，示范需另传。`)) return
+    setDeriveBusy(true)
+    setError('')
+    try {
+      const res = await deriveFemaleExercise(data.id, true)
+      setNotice(res.created ? `已派生 ${res.exercise.name_zh}` : `已关联 ${res.exercise.name_zh}`)
+      navigate(`/exercises/${encodeURIComponent(res.exercise.id)}`)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '派生失败')
+    } finally {
+      setDeriveBusy(false)
+    }
+  }
+
   async function onToggleH5Visibility() {
     if (!data || !form) return
     const hide = data.is_valid_exercise !== false
@@ -408,9 +434,35 @@ export function ExerciseDetailPage() {
             {data.fdb_id ? ` · ${data.fdb_id}` : ''}
             {form.coach_core ? ' · 主力' : ''}
             {data.is_valid_exercise === false ? ' · 已从 H5 下架' : ''}
+            {data.variant_of ? ' · 女版' : ''}
           </div>
+          {data.variant_of || data.female_variant ? (
+            <div className="variant-links">
+              {data.variant_of ? (
+                <Link className="variant-link" to={`/exercises/${encodeURIComponent(data.variant_of)}`}>
+                  男版 · {data.variant_of_name || data.variant_of}
+                </Link>
+              ) : null}
+              {data.female_variant ? (
+                <Link className="variant-link" to={`/exercises/${encodeURIComponent(data.female_variant)}`}>
+                  女版 · {data.female_variant_name || data.female_variant}
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="head-actions">
+          {!data.variant_of ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={deriveBusy}
+              onClick={() => void onDeriveFemale()}
+              title={data.female_variant ? '打开已关联女版' : '派生女版 SKU（复制分类/要领，示范另传）'}
+            >
+              {deriveBusy ? '派生中…' : data.female_variant ? '打开女版' : '派生女版'}
+            </button>
+          ) : null}
           <button
             type="button"
             className="secondary ai-draft"
