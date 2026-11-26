@@ -3,8 +3,8 @@
   min-height: 0;
   height: 100%;
   flex-direction: column;
-  overflow: auto;
-  padding-bottom: var(--sp-8);
+  overflow: hidden;
+  padding-bottom: var(--sp-4);
 }
 
 .ai-ops .head {
@@ -131,9 +131,9 @@
 }
 
 .ai-ops .filter-row button.on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--bg);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
 .ai-ops .primary {
@@ -149,6 +149,7 @@
 
 .ai-ops .layout {
   display: grid;
+  flex: 1 1 auto;
   grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr);
   gap: var(--sp-4);
   min-height: 0;
@@ -157,10 +158,15 @@
 @media (max-width: 960px) {
   .ai-ops .layout {
     grid-template-columns: 1fr;
+    overflow: auto;
   }
 }
 
 .ai-ops .panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
@@ -186,9 +192,10 @@
 
 .ai-ops .list {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: 8px;
-  max-height: min(70vh, 720px);
   overflow: auto;
 }
 

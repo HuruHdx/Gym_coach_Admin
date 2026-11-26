@@ -93,6 +93,8 @@ type ProducedItem = {
   url?: string
   /** 本次切片钉住的封面/示范，区别于库内旧示范回填 */
   fromSession?: boolean
+  /** demo 产出对应草稿行，便于清除 */
+  rowId?: string
 }
 type CookieState = {
   source: 'paste' | 'browser'
@@ -493,6 +495,26 @@ function suspectReasonText(reason: string | null | undefined) {
   }
 }
 
+/** 清单里只提了名、无组次/要领：默认折叠，不当正式动作 */
+function isChattySuspect(ex: StudioExerciseDraft) {
+  return Boolean(ex.suspect) && String(ex.suspect_reason || '') === 'no_teach_clue'
+}
+
+function suspectBadgeShort(reason: string | null | undefined) {
+  switch (reason) {
+    case 'no_teach_clue':
+      return '闲聊'
+    case 'missing_evidence':
+      return '缺原话'
+    case 'overlap_or_out_of_order':
+      return '重叠'
+    case 'fallback_heuristic':
+      return '兜底'
+    default:
+      return '可疑'
+  }
+}
+
 function evidencePreview(ex: StudioExerciseDraft): string | null {
   const text = String(ex.evidence?.text || '').trim()
   return text || null
@@ -721,6 +743,8 @@ export function StudioPage() {
   const [activeBlockIdx, setActiveBlockIdx] = useState(-1)
   /** 只看可疑（与红黄绿灯独立） */
   const [suspectOnly, setSuspectOnly] = useState(false)
+  /** 默认折叠「疑似闲聊提及」；展开后才进清单 */
+  const [showChattySuspects, setShowChattySuspects] = useState(false)
   const [appendPlanId, setAppendPlanId] = useState('')
   const [appendMode, setAppendMode] = useState<'new' | 'append' | 'compose'>('new')
   /** 多条合成：勾选的其它可发布任务 */
@@ -905,14 +929,8 @@ export function StudioPage() {
 
   const rows = useMemo(() => flatRows(draft), [draft])
 
-  // 解绑后入库选项失效，落点收回只本计划（须在 rows 声明之后，否则 TDZ 黑屏）
-  useEffect(() => {
-    if (!cueDrawerRowId || cueSaveTarget !== 'library') return
-    const row = rows.find((x) => x.ex.id === cueDrawerRowId)?.ex
-    if (!row?.exercise_id) setCueSaveTarget('plan')
-  }, [cueDrawerRowId, cueSaveTarget, rows])
-
   // 示范弹窗：滚到当前动作（清单里正在看的那条）
+  // 注：未绑库时允许停在「写入库」以便展开 SKU；勿再强制打回本计划（否则 tab 像点不动）
   useEffect(() => {
     if (!demoPickOpen || !activeRowId) return
     const t = window.setTimeout(() => {
@@ -924,12 +942,22 @@ export function StudioPage() {
   }, [demoPickOpen, activeRowId])
 
   const suspectCount = useMemo(() => rows.filter((r) => Boolean(r.ex.suspect)).length, [rows])
+  const blockRows = useMemo(
+    () => (activeBlockIdx < 0 ? rows : rows.filter((r) => r.block === activeBlockIdx)),
+    [rows, activeBlockIdx],
+  )
+  const chattyRows = useMemo(() => blockRows.filter((r) => isChattySuspect(r.ex)), [blockRows])
+  const chattySuspectCount = chattyRows.length
   const visibleRows = useMemo(() => {
-    let list = activeBlockIdx < 0 ? rows : rows.filter((r) => r.block === activeBlockIdx)
-    if (suspectOnly) list = list.filter((r) => Boolean(r.ex.suspect))
-    // 可疑置顶，其余保持原序
+    let list = blockRows
+    if (suspectOnly) {
+      list = list.filter((r) => Boolean(r.ex.suspect))
+    } else {
+      // 闲聊单独挂在折叠条下方展开，不混进主清单末尾
+      list = list.filter((r) => !isChattySuspect(r.ex))
+    }
     return [...list].sort((a, b) => Number(Boolean(b.ex.suspect)) - Number(Boolean(a.ex.suspect)))
-  }, [rows, activeBlockIdx, suspectOnly])
+  }, [blockRows, suspectOnly])
   const pendingAll = useMemo(() => rows.filter((r) => trafficOf(r.ex) !== 'green').length, [rows])
   const clippedCount = useMemo(() => rows.filter((r) => r.ex.media_status === 'clipped').length, [rows])
 
@@ -1015,6 +1043,7 @@ export function StudioPage() {
         // 必须用封面图；demo 是 mp4，塞进 <img> 会裂图
         url: cover,
         fromSession,
+        rowId: r.ex.id,
       })
     }
     return items
@@ -1048,6 +1077,78 @@ export function StudioPage() {
     }))
     if (activeRowId === rowId) setActiveRowId(null)
     toast.ok(`已从清单移除「${label}」。点「存草稿」固化；SKU 若还在库里，可到动作库页下架。`)
+  }
+
+  function removeChattySuspectRows() {
+    const n = chattySuspectCount
+    if (!n) return
+    if (!window.confirm(`从清单移除 ${n} 条「疑似闲聊提及」？只改草稿，不删动作库。`)) return
+    const drop = new Set(rows.filter((r) => isChattySuspect(r.ex)).map((r) => r.ex.id))
+    setDraft((prev) => ({
+      ...prev,
+      blocks: (prev.blocks || []).map((b) => ({
+        ...b,
+        exercises: (b.exercises || []).filter((ex) => !drop.has(ex.id)),
+      })),
+    }))
+    if (activeRowId && drop.has(activeRowId)) setActiveRowId(null)
+    if (cueDrawerRowId && drop.has(cueDrawerRowId)) closeCueDrawer()
+    setShowChattySuspects(false)
+    toast.ok(`已移除 ${n} 条闲聊提及，记得存草稿`)
+  }
+
+  function clearRowDemo(rowId: string, opts?: { quiet?: boolean }) {
+    const row = rows.find((r) => r.ex.id === rowId)?.ex
+    if (!row) return
+    const hadLibrary = Boolean(
+      row.exercise_id &&
+        (row.candidates || []).some(
+          (c) => String(c.id) === String(row.exercise_id) && skuHasDemo(c) === true,
+        ),
+    )
+    patchExercise(rowId, {
+      demo_url: null,
+      demo_cover_url: null,
+      media_status: hadLibrary ? 'library' : row.exercise_id ? 'uncut' : 'pending_sku',
+      attach_demo: false,
+      replace_demo: false,
+      write_library: false,
+    })
+    clipPinsRef.current = { ...clipPinsRef.current }
+    delete clipPinsRef.current[rowId]
+    setClipPins((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+    setClipMeta((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+    setPreviewUrl((prev) => {
+      if (!prev) return prev
+      const demo = mediaSrc(row.demo_url || null)
+      if (demo && prev.startsWith(demo)) return null
+      return prev
+    })
+    if (!opts?.quiet) {
+      const label = row.spoken_name || row.exercise_name || '该动作'
+      toast.ok(`已清除「${label}」示范，记得存草稿`)
+    }
+  }
+
+  function clearProducedItem(item: ProducedItem) {
+    if (item.kind === 'cover') {
+      if (!window.confirm('清除计划封面？')) return
+      setDraft((prev) => ({ ...prev, cover_url: null }))
+      toast.ok('已清除计划封面，记得存草稿')
+      return
+    }
+    if (!item.rowId) return
+    const label = item.label || '该示范'
+    if (!window.confirm(`清除「${label}」的示范切片？只改本任务草稿。`)) return
+    clearRowDemo(item.rowId)
   }
 
   function seekTo(sec: number) {
@@ -1487,15 +1588,52 @@ export function StudioPage() {
     setDemoPickOpen(true)
   }
 
-  async function attachDemoToRow(r: Row) {
+  /** 示范落点：未绑/失效不能写库；已绑要区分库里有没有示范 */
+  function demoRowLibState(ex: StudioExerciseDraft): {
+    kind: 'unbound' | 'stale' | 'bound'
+    skuName?: string
+    hasDemo?: boolean
+  } {
+    // 失效只看「无有效 id」；重绑后即使旧标还在，有 exercise_id 就算已对应
+    if (!ex.exercise_id) {
+      return ex.sku_missing
+        ? { kind: 'stale', skuName: ex.exercise_name || undefined }
+        : { kind: 'unbound' }
+    }
+    const hit = (ex.candidates || []).find((c) => String(c.id) === String(ex.exercise_id))
+    const known = skuHasDemo(hit)
+    const hasDemo = ex.media_status === 'library' ? true : known
+    return {
+      kind: 'bound',
+      skuName: ex.exercise_name || `ID ${ex.exercise_id}`,
+      hasDemo: hasDemo === true ? true : hasDemo === false ? false : undefined,
+    }
+  }
+
+  async function attachDemoToRow(r: Row, writeToLibrary: boolean) {
     if (!sel || !assertDemoDuration(sel)) return
+    const lib = demoRowLibState(r.ex)
+    const toLibrary = Boolean(isExerciseOnly || writeToLibrary)
+    if (toLibrary && !isExerciseOnly) {
+      if (lib.kind === 'stale') {
+        toast.err('原绑定已失效，请在清单重新绑到库里的动作')
+        return
+      }
+      if (lib.kind === 'unbound') {
+        toast.err('还没对应库动作。先绑已有 SKU，或到详情新建，再写入库')
+        return
+      }
+    }
     setDemoPickOpen(false)
     setActiveRowId(r.ex.id)
-    await onAttachDemoNow({
-      ...r.ex,
-      snippet: { ...r.ex.snippet, start: sel.start, end: sel.end },
-      attach_demo: true,
-    })
+    await onAttachDemoNow(
+      {
+        ...r.ex,
+        snippet: { ...r.ex.snippet, start: sel.start, end: sel.end },
+        attach_demo: true,
+      },
+      { writeToLibrary: toLibrary, skuHasDemo: lib.kind === 'bound' ? lib.hasDemo : undefined },
+    )
   }
 
   async function onSetPlanCover() {
@@ -1789,6 +1927,7 @@ export function StudioPage() {
         traffic: 'green',
         match_score: 100,
         match_confidence: 1,
+        sku_missing: false,
       }
       patchExercise(ex.id, patch)
       setBindPickerOpen(false)
@@ -1848,6 +1987,7 @@ export function StudioPage() {
         exercise_name: res.exercise.name_zh,
         traffic: 'green',
         match_confidence: 1,
+        sku_missing: false,
         // 新建 SKU 默认无示范；只有本计划已切才标 clipped
         media_status: clipped ? 'clipped' : 'uncut',
       }
@@ -1872,14 +2012,30 @@ export function StudioPage() {
     return null
   }
 
-  async function onAttachDemoNow(ex: StudioExerciseDraft, opts?: { writeToLibrary?: boolean }) {
+  async function onAttachDemoNow(
+    ex: StudioExerciseDraft,
+    opts?: { writeToLibrary?: boolean; skuHasDemo?: boolean },
+  ) {
     if (activeId == null) return
     const writeToLibrary = Boolean(opts?.writeToLibrary) || isExerciseOnly
     let exerciseId = ex.exercise_id
     if (!exerciseId) {
+      if (!isExerciseOnly) {
+        toast.err(
+          writeToLibrary
+            ? '写入动作库前请先绑已有动作，或到详情新建'
+            : '请先对应到库里的动作（或新建），再切示范',
+        )
+        return
+      }
+      // 仅「动作素材」模式允许切片时顺手新建 SKU
       const created = await onQuickCreate({ ...ex, media_status: 'uncut' })
       exerciseId = created?.exercise_id || null
       if (!exerciseId) return
+    }
+    if (!exerciseId && ex.sku_missing) {
+      toast.err('原绑定已失效，请重新绑库后再切示范')
+      return
     }
     const range = clipRangeFor(ex)
     if (!range) {
@@ -1888,8 +2044,14 @@ export function StudioPage() {
     }
     if (!assertDemoDuration(range)) return
     if (writeToLibrary) {
+      const label = ex.exercise_name || ex.spoken_name || '该动作'
+      const hasDemo = opts?.skuHasDemo
       const ok = window.confirm(
-        `把「${ex.spoken_name || ex.exercise_name || '该动作'}」的示范写入动作库？会覆盖该 SKU 现有示范。`,
+        hasDemo === true
+          ? `「${label}」动作库已有示范，用这段替换？`
+          : hasDemo === false
+            ? `「${label}」库里还没有示范，把这段补进去？`
+            : `把「${label}」的示范写入动作库？若 SKU 已有示范会被盖掉。`,
       )
       if (!ok) return
     }
@@ -1955,6 +2117,7 @@ export function StudioPage() {
       match_confidence: score / 100,
       traffic: 'green',
       media_status: status,
+      sku_missing: false,
     }
     const nextDraft = mapRows(draft, ex.id, {
       exercise_id: next.exercise_id,
@@ -1965,6 +2128,7 @@ export function StudioPage() {
       match_confidence: next.match_confidence,
       traffic: 'green',
       media_status: next.media_status,
+      sku_missing: false,
     })
     setDraft(nextDraft)
     setBindPickerOpen(false)
@@ -2806,38 +2970,51 @@ export function StudioPage() {
             </span>
             <div className="produced-list">
               {producedItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`produced-chip ${item.kind}`}
-                  onClick={() => {
-                    if (item.start != null && item.end != null) {
-                      focusWaveAt({ start: item.start, end: item.end })
-                    }
-                  }}
-                  title={item.label}
-                >
-                  {item.url ? (
-                    <img src={item.url} alt="" />
-                  ) : (
-                    <span className="produced-ico">{item.kind === 'cover' ? '封面' : '示范'}</span>
-                  )}
-                  <em>
-                    {item.kind === 'cover'
-                      ? '计划封面'
-                      : `${
-                          item.fromSession
-                            ? isExerciseOnly
-                              ? '本次 · '
-                              : '本计划 · '
-                            : '库内 · '
-                        }${item.label}${
-                          item.start != null && item.end != null
-                            ? ` · ${(item.end - item.start).toFixed(0)}s`
-                            : ''
-                        }`}
-                  </em>
-                </button>
+                <div key={item.id} className={`produced-chip-wrap ${item.kind}`}>
+                  <button
+                    type="button"
+                    className={`produced-chip ${item.kind}`}
+                    onClick={() => {
+                      if (item.start != null && item.end != null) {
+                        focusWaveAt({ start: item.start, end: item.end })
+                      }
+                    }}
+                    title={item.label}
+                  >
+                    {item.url ? (
+                      <img src={item.url} alt="" />
+                    ) : (
+                      <span className="produced-ico">{item.kind === 'cover' ? '封面' : '示范'}</span>
+                    )}
+                    <em>
+                      {item.kind === 'cover'
+                        ? '计划封面'
+                        : `${
+                            item.fromSession
+                              ? isExerciseOnly
+                                ? '本次 · '
+                                : '本计划 · '
+                              : '库内 · '
+                          }${item.label}${
+                            item.start != null && item.end != null
+                              ? ` · ${(item.end - item.start).toFixed(0)}s`
+                              : ''
+                          }`}
+                    </em>
+                  </button>
+                  <button
+                    type="button"
+                    className="produced-chip-del"
+                    title={item.kind === 'cover' ? '清除计划封面' : '清除此示范'}
+                    aria-label={item.kind === 'cover' ? '清除计划封面' : `清除 ${item.label}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      clearProducedItem(item)
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -3207,35 +3384,33 @@ export function StudioPage() {
     const tag = mediaTag(r.ex)
     const at = anchorOf(r.ex)
     const on = r.ex.id === activeRowId
-    const ev = evidencePreview(r.ex)
     const suspect = Boolean(r.ex.suspect)
+    const chatty = isChattySuspect(r.ex)
+    const name = (r.ex.spoken_name || r.ex.exercise_name || '').trim() || (chatty ? '未命名提及' : '未命名')
     return (
       <li key={r.ex.id} className={`arow${on ? ' on' : ''}${suspect ? ' suspect' : ''}`}>
         <button type="button" className="arow-btn" onClick={() => focusRow(r.ex)} title="定位到视频与波形">
           <span className="arow-n num">{r.n}</span>
           <span className={`dot ${t}`} title={trafficText(t)} />
           <span className="arow-body">
-            <span className="arow-name" title={r.ex.spoken_name || r.ex.exercise_name || '未命名'}>
-              {r.ex.spoken_name || r.ex.exercise_name || '未命名'}
+            <span className="arow-name" title={name}>
+              {name}
             </span>
-            {ev ? (
-              <span className="arow-cue" title={ev}>
-                {ev}
-              </span>
-            ) : null}
+            <span className="arow-meta">
+              {suspect ? (
+                <span className="tag warn" title={suspectReasonText(r.ex.suspect_reason)}>
+                  {suspectBadgeShort(r.ex.suspect_reason)}
+                </span>
+              ) : null}
+              <span className="arow-sets num">{setsText(r.ex)}</span>
+              {at !== undefined ? <span className="arow-at num">{fmtAnchor(at)}</span> : null}
+              {tag ? (
+                <span className={`tag ${tag.cls}`} title={tag.title || tag.label}>
+                  {tag.label}
+                </span>
+              ) : null}
+            </span>
           </span>
-          {suspect ? (
-            <span className="tag warn" title={suspectReasonText(r.ex.suspect_reason)}>
-              ⚠ {suspectReasonText(r.ex.suspect_reason)}
-            </span>
-          ) : null}
-          <span className="arow-sets num">{setsText(r.ex)}</span>
-          {at !== undefined ? <span className="arow-at num">{fmtAnchor(at)}</span> : null}
-          {tag ? (
-            <span className={`tag ${tag.cls}`} title={tag.title || tag.label}>
-              {tag.label}
-            </span>
-          ) : null}
         </button>
         <button
           type="button"
@@ -3602,6 +3777,29 @@ export function StudioPage() {
               {toolBtns}
             </div>
             <p className="muted">仅存动作素材：绑 SKU → 中栏「设为动作示范片段」→ 写入动作库（不建计划）</p>
+            {chattySuspectCount ? (
+              <div className="chatty-fold">
+                <div className="chatty-fold-bar">
+                  <span className="muted">
+                    {showChattySuspects ? '闲聊提及' : '已折叠'}{' '}
+                    <span className="num">{chattySuspectCount}</span> 条
+                  </span>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => setShowChattySuspects((v) => !v)}
+                  >
+                    {showChattySuspects ? '收起' : '展开'}
+                  </button>
+                  <button type="button" className="btn sm" onClick={removeChattySuspectRows}>
+                    一键移除
+                  </button>
+                </div>
+                {showChattySuspects ? (
+                  <ul className="alist chatty-alist">{chattyRows.map((r) => renderListRow(r))}</ul>
+                ) : null}
+              </div>
+            ) : null}
             <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
             <button type="button" className="btn sm" onClick={addManualRow}>
               ＋ 手动加一行
@@ -3648,6 +3846,29 @@ export function StudioPage() {
             ) : null}
             {toolBtns}
           </div>
+          {chattySuspectCount && !suspectOnly ? (
+            <div className="chatty-fold">
+              <div className="chatty-fold-bar">
+                <span className="muted">
+                  {showChattySuspects ? '闲聊提及' : '已折叠'}{' '}
+                  <span className="num">{chattySuspectCount}</span> 条
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => setShowChattySuspects((v) => !v)}
+                >
+                  {showChattySuspects ? '收起' : '展开'}
+                </button>
+                <button type="button" className="btn sm" onClick={removeChattySuspectRows}>
+                  一键移除
+                </button>
+              </div>
+              {showChattySuspects ? (
+                <ul className="alist chatty-alist">{chattyRows.map((r) => renderListRow(r))}</ul>
+              ) : null}
+            </div>
+          ) : null}
           <ul className="alist">{visibleRows.map((r) => renderListRow(r))}</ul>
           <div className="legend">
             <span><i className="dot green" /> 绿 · 已对应库动作</span>
@@ -3694,7 +3915,7 @@ export function StudioPage() {
           <span className={`tag ${t === 'green' ? 'ok' : t === 'amber' ? 'amber' : 'red'}`}>{statusText}</span>
           {ex.suspect ? (
             <span className="tag warn" title={suspectReasonText(ex.suspect_reason)}>
-              ⚠ {suspectReasonText(ex.suspect_reason)}
+              ⚠ {suspectBadgeShort(ex.suspect_reason)}
             </span>
           ) : null}
           {at !== undefined ? <span className="muted num">{fmtAnchor(at)}</span> : null}
@@ -3770,7 +3991,13 @@ export function StudioPage() {
               className="btn sm"
               disabled={!ex.exercise_id || busy}
               title="可选：把本计划示范同步进动作库（会盖 SKU）"
-              onClick={() => void onAttachDemoNow(ex, { writeToLibrary: true })}
+              onClick={() => {
+                const lib = demoRowLibState(ex)
+                void onAttachDemoNow(ex, {
+                  writeToLibrary: true,
+                  skuHasDemo: lib.kind === 'bound' ? lib.hasDemo : undefined,
+                })
+              }}
             >
               写入动作库
             </button>
@@ -3891,6 +4118,27 @@ export function StudioPage() {
             </div>
 
             {cueSaveTarget === 'library' ? renderBindBlock(ex, 'drawer') : null}
+
+            {!isExerciseOnly && bound && (ex.media_status === 'clipped' || ex.demo_url) && !ex.write_library ? (
+              <button
+                type="button"
+                className="btn sm"
+                disabled={busy}
+                title="把本计划已切示范同步进动作库（会盖 SKU）"
+                onClick={() => {
+                  const lib = demoRowLibState(ex)
+                  void onAttachDemoNow(ex, {
+                    writeToLibrary: true,
+                    skuHasDemo: lib.kind === 'bound' ? lib.hasDemo : undefined,
+                  })
+                }}
+              >
+                示范同步进库
+              </button>
+            ) : null}
+            {!isExerciseOnly && bound && ex.write_library ? (
+              <p className="muted tight">示范已标记写入库</p>
+            ) : null}
 
             <div className="action-card-k">
               {cueSaveTarget === 'library' ? '对照库内' : '口播要点'}
@@ -4087,7 +4335,9 @@ export function StudioPage() {
               <p className="muted">
                 {fmtPrecise(sel.start)} → {fmtPrecise(sel.end)} · {(sel.end - sel.start).toFixed(1)}s
                 （限 {DEMO_MIN_SEC}～{DEMO_MAX_SEC} 秒）·{' '}
-                {isExerciseOnly ? '将写入动作库' : '默认挂本计划，不改动作库'}
+                {isExerciseOnly
+                  ? '动作素材模式：写入对应库动作'
+                  : '按行判断：已绑库可挂本计划或写入库；未绑/失效先去对应'}
               </p>
             </div>
             <button type="button" className="link" onClick={() => setDemoPickOpen(false)} aria-label="关闭">
@@ -4097,24 +4347,77 @@ export function StudioPage() {
           <ul className="demo-pick-list">
             {ordered.map((r) => {
               const name = r.ex.spoken_name || r.ex.exercise_name || `动作 ${r.n}`
-              const bound = r.ex.exercise_name || (r.ex.exercise_id ? `ID ${r.ex.exercise_id}` : '尚未绑库')
+              const lib = demoRowLibState(r.ex)
               const preferred = r.ex.id === activeRowId
+              const statusEm =
+                lib.kind === 'stale'
+                  ? `绑库失效 · ${lib.skuName || '请重绑'}`
+                  : lib.kind === 'unbound'
+                    ? '未对应库动作'
+                    : lib.hasDemo === true
+                      ? `库有 · ${lib.skuName} · 已有示范`
+                      : lib.hasDemo === false
+                        ? `库有 · ${lib.skuName} · 尚无示范`
+                        : `库有 · ${lib.skuName}`
+              const canWriteLib = isExerciseOnly || lib.kind === 'bound'
               return (
-                <li key={r.ex.id}>
-                  <button
-                    type="button"
-                    data-demo-pick-id={r.ex.id}
-                    className={`demo-pick-btn${preferred ? ' prefer' : ''}`}
-                    disabled={busy}
-                    onClick={() => void attachDemoToRow(r)}
-                  >
+                <li key={r.ex.id} className={`demo-pick-row${preferred ? ' prefer' : ''}`}>
+                  <div className="demo-pick-main" data-demo-pick-id={r.ex.id}>
                     <span className="demo-pick-n num">{r.n}</span>
                     <span className="demo-pick-body">
                       <strong>{name}</strong>
-                      <em>{bound}</em>
+                      <em>{statusEm}</em>
                     </span>
-                    <span className="demo-pick-go">{preferred ? '当前选中 · 用这条' : '用这条'}</span>
-                  </button>
+                  </div>
+                  <div className="demo-pick-actions">
+                    {isExerciseOnly ? (
+                      <button
+                        type="button"
+                        className="btn sm accent-fill"
+                        disabled={busy || lib.kind === 'stale'}
+                        onClick={() => void attachDemoToRow(r, true)}
+                      >
+                        写入库
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          disabled={busy || lib.kind === 'stale' || lib.kind === 'unbound'}
+                          title={
+                            lib.kind === 'bound'
+                              ? '只挂本计划，不改动作库'
+                              : '先对应库动作后再切'
+                          }
+                          onClick={() => void attachDemoToRow(r, false)}
+                        >
+                          挂本计划
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm accent-fill"
+                          disabled={busy || !canWriteLib}
+                          title={
+                            lib.kind === 'stale'
+                              ? '原绑定已失效，请重绑'
+                              : lib.kind === 'unbound'
+                                ? '库里没有对应：先绑已有或详情新建'
+                                : lib.hasDemo === true
+                                  ? '替换该 SKU 现有示范'
+                                  : '补进动作库示范'
+                          }
+                          onClick={() => void attachDemoToRow(r, true)}
+                        >
+                          {lib.kind === 'unbound' || lib.kind === 'stale'
+                            ? '需先绑库'
+                            : lib.hasDemo === true
+                              ? '替换库示范'
+                              : '补进库'}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </li>
               )
             })}

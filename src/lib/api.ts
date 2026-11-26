@@ -681,6 +681,8 @@ export type StudioExerciseDraft = {
   spoken_name: string
   exercise_id?: string | null
   exercise_name?: string | null
+  /** 草稿绑的 SKU 已从动作库消失；需重绑 */
+  sku_missing?: boolean
   target_muscle?: string | null
   gear?: string | null
   role?: string
