@@ -1059,4 +1059,161 @@ export function confirmStudioPlan(payload: {
   })
 }
 
+/* ---------- AI Ops ---------- */
+
+export type AiOpsMissItem = {
+  norm_query: string
+  display_query: string
+  count: number
+  last_at: string | null
+  examples: string[]
+  near_miss: Array<{ exercise_id?: string | null; name_zh: string; score?: number | null }>
+  trace_ids: number[]
+  status: string
+  bound_exercise_id?: string | null
+  note?: string | null
+}
+
+export type AiOpsMissDiagnose = {
+  verdict: 'has_match' | 'missing_exercise' | 'non_exercise' | string
+  reason: string
+  suggested_candidates: Array<{
+    exercise_id?: string | null
+    name_zh: string
+    confidence?: number
+  }>
+  suggested_alias?: string | null
+}
+
+export type AiOpsFeedbackItem = {
+  id: number
+  created_at: string | null
+  rating: string
+  tags: string[]
+  note: string
+  question: string
+  answer: string
+  conversation_id: string
+  trace_id: number | null
+  assistant_turn_id: number | null
+  export_status: string
+  snapshot: Record<string, unknown>
+  ai_diagnosis?: {
+    root_cause?: string
+    fix_hint?: string
+    assert_draft?: string
+  } | null
+}
+
+export function fetchAiOpsMisses(status = 'pending') {
+  const params = new URLSearchParams({ status })
+  return request<{ items: AiOpsMissItem[]; total: number }>(
+    `/api/admin/ai-ops/misses?${params}`,
+  )
+}
+
+export function diagnoseAiOpsMiss(payload: {
+  norm_query: string
+  display_query?: string
+  examples?: string[]
+}) {
+  return request<AiOpsMissDiagnose>('/api/admin/ai-ops/misses/diagnose', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function bindAiOpsMissAlias(payload: {
+  norm_query: string
+  exercise_id: string
+  alias?: string
+}) {
+  return request<{
+    ok: boolean
+    alias: string
+    bound_exercise_id: string
+    exercise_name_zh: string
+  }>('/api/admin/ai-ops/misses/bind-alias', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function resolveAiOpsMiss(payload: {
+  norm_query: string
+  status: 'created_sku' | 'ignored'
+  bound_exercise_id?: string
+  note?: string
+}) {
+  return request<{ ok: boolean; status: string }>('/api/admin/ai-ops/misses/resolve', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchAiOpsFeedbacks(status = 'pending') {
+  const params = new URLSearchParams({ status })
+  return request<{ items: AiOpsFeedbackItem[]; total: number }>(
+    `/api/admin/ai-ops/feedbacks?${params}`,
+  )
+}
+
+export function diagnoseAiOpsFeedback(id: number) {
+  return request<{
+    root_cause: string
+    fix_hint: string
+    assert_draft: string
+  }>(`/api/admin/ai-ops/feedbacks/${id}/diagnose`, { method: 'POST' })
+}
+
+export function exportAiOpsFeedback(
+  id: number,
+  payload: { write_file?: boolean; format?: 'auto' | 'single' | 'thread' } = {},
+) {
+  return request<{
+    ok: boolean
+    export_status: string
+    yaml: string
+    path: string | null
+  }>(`/api/admin/ai-ops/feedbacks/${id}/export`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function discardAiOpsFeedback(id: number) {
+  return request<{ ok: boolean; export_status: string }>(
+    `/api/admin/ai-ops/feedbacks/${id}/discard`,
+    { method: 'POST' },
+  )
+}
+
+export type AiOpsPlanGapItem = {
+  key: string
+  label: string
+  scene_tag: string | null
+  count: number
+  last_at: string | null
+  examples: string[]
+  studio_path: string
+}
+
+export function fetchAiOpsPlanGaps() {
+  return request<{ items: AiOpsPlanGapItem[]; total: number }>('/api/admin/ai-ops/plan-gaps')
+}
+
+export function addExerciseAlias(exerciseId: string, alias: string) {
+  return request<{
+    ok: boolean
+    skipped?: boolean
+    created?: boolean
+    alias: string
+    bound_exercise_id: string
+    exercise_name_zh: string
+  }>('/api/admin/ai-ops/aliases', {
+    method: 'POST',
+    body: JSON.stringify({ exercise_id: exerciseId, alias }),
+  })
+}
+
 export { API_BASE }

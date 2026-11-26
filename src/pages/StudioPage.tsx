@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  addExerciseAlias,
   attachStudioDemo,
   confirmStudioPlan,
   continueStudioPipeline,
@@ -744,6 +745,8 @@ export function StudioPage() {
   const [bindFilter, setBindFilter] = useState('')
   const [bindHits, setBindHits] = useState<ExerciseListItem[]>([])
   const [bindPickerOpen, setBindPickerOpen] = useState(false)
+  /** 绑 SKU 时若口播词 ≠ 库名，顺手把口播词写成别名 */
+  const [addSpokenAsAlias, setAddSpokenAsAlias] = useState(true)
 
   useEffect(() => {
     taskRef.current = task
@@ -1974,6 +1977,20 @@ export function StudioPage() {
           toast.err(err instanceof Error ? err.message : '绑定未保存到服务器')
         })
     }
+    // 口播词与库名不一致时，可选沉淀为别名并热重载
+    const spoken = (ex.spoken_name || '').trim()
+    const official = (hit.name_zh || '').trim()
+    const spokenKey = spoken.replace(/\s+/g, '').toLowerCase()
+    const officialKey = official.replace(/\s+/g, '').toLowerCase()
+    if (addSpokenAsAlias && spoken && spokenKey !== officialKey) {
+      void addExerciseAlias(hitId, spoken)
+        .then((res) => {
+          if (!res.skipped) toast.ok(`已加别名「${spoken}」`)
+        })
+        .catch((err: unknown) => {
+          toast.err(err instanceof Error ? err.message : '别名未写入')
+        })
+    }
     // 抽屉已开：若正在「写入库」，绑完拉对照；否则保持本计划编辑
     if (cueDrawerRowId === ex.id) {
       setBindPickerOpen(false)
@@ -3100,6 +3117,16 @@ export function StudioPage() {
             placeholder="搜库动作"
             autoFocus={bound || variant === 'drawer'}
           />
+        ) : null}
+        {(ex.spoken_name || '').trim() ? (
+          <label className="bind-alias-check">
+            <input
+              type="checkbox"
+              checked={addSpokenAsAlias}
+              onChange={(e) => setAddSpokenAsAlias(e.target.checked)}
+            />
+            <span>同时把口播「{(ex.spoken_name || '').trim()}」加为别名</span>
+          </label>
         ) : null}
         <ul className="bind-sku-list">
           {!options.length ? <li className="muted pad">无匹配</li> : null}

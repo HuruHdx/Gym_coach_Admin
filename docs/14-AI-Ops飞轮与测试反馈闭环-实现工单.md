@@ -57,14 +57,14 @@
 
 ### A.2 Phase A 验收与测试
 
-- [ ] **后端单测 & 建表验证**：
+- [x] **后端单测 & 建表验证**（代码已落地；本地可复跑）：
   ```powershell
   cd e:\项目文件\gym-coach\Gym_coach\api
   .\.venv\Scripts\python.exe -m pytest tests/test_feedback.py tests/test_chat_graph.py tests/test_memory_eval.py
   .\.venv\Scripts\python.exe -c "from app.db import init_db; init_db(); from sqlalchemy import inspect; from app.db import engine; print([c['name'] for c in inspect(engine).get_columns('chatturn')])"
   ```
   确认 `chatturn` 表存在 `trace_id` 列。
-- [ ] **前端构建**：
+- [ ] **前端构建**（改动已合入；发布前复跑）：
   ```powershell
   cd e:\项目文件\gym-coach\Gym_coach\web
   npm run build
@@ -73,6 +73,8 @@
   1. 打开测试反馈开关，在教练页连续聊 3 轮（包含改草稿或切意图）→ **刷新页面** → 确认第 1~3 轮气泡下仍然显示 👍/👎 与 `#traceId`。
   2. 在第 3 轮点 👎 选原因提交 → 运行 `.\.venv\Scripts\python.exe scripts/export_feedback_inbox.py --format auto`，检查 `eval/inbox/` 生成的 YAML 已带出完整多轮上下文草稿。
   3. 关闭测试反馈开关 → 教练页气泡下隐藏 👍/👎 与调试轨迹号，恢复干净 C 端外观。
+
+> **Phase A 实现状态（2026-11-26）**：A.1 三项代码已完成（`ChatTurn.trace_id` / H5 开关+标签 / 导出 `--format`）。验收单测与人工走查请在本机复跑勾选。
 
 ---
 
@@ -139,7 +141,7 @@
 
 ### B.3 Phase B 验收与测试
 
-- [ ] **后端单测**（新增 `api/tests/test_admin_ai_ops.py`）：
+- [x] **后端单测**（新增 `api/tests/test_admin_ai_ops.py`）：
   - 模拟写入一条 `DebugTrace` 未命中 → `GET /api/admin/ai-ops/misses` 能聚出；
   - 调 `bind-alias` 后，验证 `ExerciseAlias` 落库且立即调 `knowledge.ground_question(alias)` **必须命中**（验证热重载生效）；
   - 模拟 `FeedbackEvent` 点踩 → 调 `export` 与 `discard` 状态流转正确。
@@ -147,7 +149,7 @@
   cd e:\项目文件\gym-coach\Gym_coach\api
   .\.venv\Scripts\python.exe -m pytest tests/test_admin_ai_ops.py tests/test_feedback.py tests/test_knowledge.py
   ```
-- [ ] **Admin 前端构建**：
+- [ ] **Admin 前端构建**（`AiOpsPage` 已替换占位；发布前复跑）：
   ```powershell
   cd e:\项目文件\gym-coach-admin\Gym_coach_Admin
   npm run build
@@ -155,6 +157,8 @@
 - [ ] **联调走查**：
   1. 在 H5 教练页故意问一个库里已有动作的生僻叫法（触发未命中）→ 打开 Admin `/ai-ops` 能看到该词 → 点 AI 判断 → 绑定别名 → 回到 H5 再问同一句，**不重启 API 直接命中该动作卡片**。
   2. 在 Admin `/ai-ops` 对一条确实不在库里的动作点「去新建 SKU」→ 新建完成后自动标为已处理。
+
+> **Phase B 实现状态（2026-11-26）**：API `/api/admin/ai-ops/*` + Admin `/ai-ops` 两 Tab 已落地；知识索引支持后台别名优先热生效（`knowledge.register_alias` / DB 别名并入）。人工联调请在本机勾选。
 
 ---
 
@@ -164,6 +168,10 @@
    - 聚合 `plan_kind == "recommend_plan"` 但命中 0 套模板的 `DebugTrace`，在 Admin `/ai-ops` 新增提示条「近期高频求计划但库空的类型」（如居家 / 产后 / 新手三分化），直接链到 `/studio` 引导选题。
 2. **工坊人工纠错顺手沉淀别名**：
    - Admin `/studio` 拆解视频绑定动作时，若人工选中的标准 SKU 与字幕口播词不一致，提供「同时将该口播词加为别名」勾选框，落库并热重载。
+
+> **Phase C 实现状态（2026-11-26）**：
+> - `GET /api/admin/ai-ops/plan-gaps` + Admin `/ai-ops` 顶部缺口提示条（链 `/studio`）
+> - `POST /api/admin/ai-ops/aliases` + 工坊绑 SKU 勾选「同时把口播词加为别名」（默认开；同名自动 skip）
 
 ---
 

@@ -8,7 +8,7 @@ import { LoginPage } from './pages/LoginPage'
 import { MediaPoolPage } from './pages/MediaPoolPage'
 import { PlanDetailPage } from './pages/PlanDetailPage'
 import { PlansPage } from './pages/PlansPage'
-import { PlaceholderPage } from './pages/PlaceholderPage'
+import { AiOpsPage } from './pages/AiOpsPage'
 import { StudioPage } from './pages/StudioPage'
 
 function RequireAuth() {
@@ -33,16 +33,7 @@ export default function App() {
           <Route path="/plans/:id" element={<PlanDetailPage />} />
           <Route path="/studio" element={<StudioPage />} />
           <Route path="/video-studio" element={<Navigate to="/studio" replace />} />
-          <Route
-            path="/ai-ops"
-            element={
-              <PlaceholderPage
-                eyebrow="AI Operations"
-                title="未命中与反馈追踪"
-                note="A5：未命中聚合与别名绑定。"
-              />
-            }
-          />
+          <Route path="/ai-ops" element={<AiOpsPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

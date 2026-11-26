@@ -14,10 +14,17 @@ import './CreateExerciseModal.css'
 type Props = {
   onCancel: () => void
   onCreated: (id: string) => void
+  initialNameZh?: string
+  initialAliases?: string
 }
 
-export function CreateExerciseModal({ onCancel, onCreated }: Props) {
-  const [nameZh, setNameZh] = useState('')
+export function CreateExerciseModal({
+  onCancel,
+  onCreated,
+  initialNameZh = '',
+  initialAliases = '',
+}: Props) {
+  const [nameZh, setNameZh] = useState(initialNameZh)
   const [nameEn, setNameEn] = useState('')
   const [muscle, setMuscle] = useState<string>('胸')
   const [subRegion, setSubRegion] = useState('')
@@ -25,7 +32,7 @@ export function CreateExerciseModal({ onCancel, onCreated }: Props) {
   const [gear, setGear] = useState<string>('自由重量')
   const [modality, setModality] = useState<string>('抗阻')
   const [coachCore, setCoachCore] = useState(false)
-  const [aliases, setAliases] = useState('')
+  const [aliases, setAliases] = useState(initialAliases)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
