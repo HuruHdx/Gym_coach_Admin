@@ -660,6 +660,7 @@ export type StudioMatchCandidate = {
   muscle?: string | null
   gear?: string | null
   has_demo?: boolean
+  has_highlight?: boolean
   score: number
   reason?: string
   is_female_variant?: boolean
@@ -708,6 +709,12 @@ export type StudioExerciseDraft = {
   demo_url?: string | null
   /** 示范封面 JPG（「本次产出」缩略图；勿把 mp4 塞进 img） */
   demo_cover_url?: string | null
+  /** 带声教学视频（attach-highlight 写回；与 demo 分轨） */
+  highlight_url?: string | null
+  highlight_cover_url?: string | null
+  highlight_snippet?: { start?: number; end?: number } | null
+  attach_highlight?: boolean
+  write_highlight_library?: boolean
   cues?: StudioEvidenceLine[]
   mistakes?: StudioEvidenceLine[]
   tempo?: string
@@ -1035,6 +1042,27 @@ export function attachStudioDemo(payload: {
     write_to_library?: boolean
     demo: { demo_url?: string; cover_url?: string }
   }>('/api/admin/studio/attach-demo', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function attachStudioHighlight(payload: {
+  task_id: number
+  exercise_id: string
+  start: number
+  end: number
+  row_id?: string
+  /** true=写入动作库 highlight_video；教学视频默认写库 */
+  write_to_library?: boolean
+}) {
+  return request<{
+    ok: boolean
+    exercise_id: string
+    row_id?: string | null
+    write_to_library?: boolean
+    highlight: { highlight_url?: string; cover_url?: string }
+  }>('/api/admin/studio/attach-highlight', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   addExerciseAlias,
   attachStudioDemo,
+  attachStudioHighlight,
   confirmStudioPlan,
   continueStudioPipeline,
   deleteStudioTask,
@@ -44,11 +45,13 @@ import './StudioPage.css'
 
 /* ───────────── 常量 / 类型 ───────────── */
 
-const TARGET_MUSCLES = ['胸', '背', '肩', '腿', '臂', '核心'] as const
 const IN_PROGRESS = ['queued', 'downloading', 'transcribing', 'parsing'] as const
 const STEP_LABELS = ['已入库', '已下载', '字幕', '切动作', '发布'] as const
 const DEMO_MIN_SEC = 2
 const DEMO_MAX_SEC = 15
+const HIGHLIGHT_MIN_SEC = 5
+const HIGHLIGHT_MAX_SEC = 180
+const HIGHLIGHT_DEFAULT_CAP = 120
 /**
  * 微调窗口：选区大约只占中间 28%，左右留白。
  * 不再把窗口卡在 90s——选区一长就会铺满整条，两端贴边只能整段拖。
@@ -86,7 +89,7 @@ type LiveInfo = {
 type Row = { ex: StudioExerciseDraft; block: number; n: number }
 type ProducedItem = {
   id: string
-  kind: 'demo' | 'cover'
+  kind: 'demo' | 'cover' | 'highlight'
   label: string
   start?: number
   end?: number
@@ -107,6 +110,11 @@ type CookieState = {
   youtube_set?: boolean
 }
 type PlatformHit = { platform: 'bilibili' | 'douyin' | 'youtube' | 'direct'; label: string; id?: string }
+type IngestKind = 'share' | 'direct' | 'file'
+type ProcessDegree = 'standard' | 'transcript' | 'assets'
+type IngestMode = 'plan_single' | 'plan_merge' | 'exercise_only'
+type Traffic = 'red' | 'amber' | 'green'
+type Sel = { start: number; end: number } | null
 
 const PROCESS_LS_KEY = 'studio.processDegree'
 const BROWSER_LS_KEY = 'studio.cookieBrowser'
@@ -222,6 +230,15 @@ function skuHasDemo(hit: StudioMatchCandidate | ExerciseListItem | undefined): b
   if ('has_demo' in hit && hit.has_demo != null) return Boolean(hit.has_demo)
   if ('slots' in hit && hit.slots && typeof hit.slots === 'object') {
     return Boolean((hit.slots as Record<string, boolean>).demo)
+  }
+  return undefined
+}
+
+function skuHasHighlight(hit: StudioMatchCandidate | ExerciseListItem | undefined): boolean | undefined {
+  if (!hit) return undefined
+  if ('has_highlight' in hit && hit.has_highlight != null) return Boolean(hit.has_highlight)
+  if ('slots' in hit && hit.slots && typeof hit.slots === 'object') {
+    return Boolean((hit.slots as Record<string, boolean>).highlight_video)
   }
   return undefined
 }
@@ -389,6 +406,18 @@ function taskQueueLabel(t: StudioTask): { label: string; tone: 'ok' | 'amber' | 
   return { label: statusLabel(t.status), tone: 'run' }
 }
 
+function highlightMetaFromDraft(d: StudioDraft): Record<string, { highlight?: string; cover?: string }> {
+  const out: Record<string, { highlight?: string; cover?: string }> = {}
+  for (const b of d.blocks || []) {
+    for (const ex of b.exercises || []) {
+      const highlight = mediaSrc(ex.highlight_url || null) || undefined
+      const cover = mediaSrc(ex.highlight_cover_url || null) || undefined
+      if (highlight || cover) out[ex.id] = { highlight, cover }
+    }
+  }
+  return out
+}
+
 function clipMetaFromDraft(d: StudioDraft): Record<string, { demo?: string; cover?: string }> {
   const out: Record<string, { demo?: string; cover?: string }> = {}
   for (const b of d.blocks || []) {
@@ -467,15 +496,6 @@ function trafficOf(ex: StudioExerciseDraft): Traffic {
   return 'red'
 }
 
-function matchScoreOf(ex: StudioExerciseDraft): number {
-  if (ex.match_score != null && Number.isFinite(Number(ex.match_score))) return Math.round(Number(ex.match_score))
-  if (ex.match_confidence != null && Number.isFinite(Number(ex.match_confidence))) {
-    const c = Number(ex.match_confidence)
-    return Math.round(c <= 1 ? c * 100 : c)
-  }
-  return 0
-}
-
 function trafficText(t: Traffic) {
   return t === 'red' ? '红点 · 库外/新建' : t === 'amber' ? '黄点 · 点选候选即可' : '绿点 · 已绑定'
 }
@@ -515,11 +535,6 @@ function suspectBadgeShort(reason: string | null | undefined) {
   }
 }
 
-function evidencePreview(ex: StudioExerciseDraft): string | null {
-  const text = String(ex.evidence?.text || '').trim()
-  return text || null
-}
-
 /** 名字归一：去空白、小写，用于同名查重（展示仍用原文 + 部位/器械/编号区分） */
 function normExerciseName(name: string | null | undefined) {
   return String(name || '')
@@ -551,8 +566,17 @@ function summarizeCuePairs(pairs: StudioCuePair[]) {
   return { replace, add, keep, result_total: result }
 }
 
-/** 只标示范素材状态；绑定看圆点。文案要分清「本计划已切」vs「SKU 里碰巧有」 */
+/** 只标示范/教学素材状态；绑定看圆点。文案要分清「本计划已切」vs「SKU 里碰巧有」 */
 function mediaTag(ex: StudioExerciseDraft): { label: string; cls: string; title?: string } | null {
+  if (ex.highlight_url || ex.attach_highlight) {
+    return {
+      label: ex.write_highlight_library ? '教学写库' : '本计划教学',
+      cls: 'ok',
+      title: ex.write_highlight_library
+        ? '带声教学视频已写入动作库 highlight_video 槽'
+        : '带声教学视频挂在本计划/草稿行，未改动作库',
+    }
+  }
   switch (ex.media_status) {
     case 'clipped':
       return {
@@ -582,16 +606,6 @@ function setsText(ex: StudioExerciseDraft) {
   const sets = ex.target_sets ?? '?'
   const reps = ex.target_reps || '?'
   return `${sets}×${reps}`
-}
-
-function roleLabel(role?: string) {
-  const map: Record<string, string> = {
-    warmup: '热身',
-    compound: '复合动作',
-    isolation: '孤立动作',
-    main: '主项',
-  }
-  return role ? map[role] || role : '正式组'
 }
 
 function taskSourceLabel(t: StudioTask) {
@@ -686,6 +700,7 @@ export function StudioPage() {
   const draftRef = useRef<StudioDraft>({ plan_title: '', blocks: [] })
   /** 本次切片成功后钉住该行封面/示范，防止轮询旧缓存或库内旧图盖住 */
   const clipPinsRef = useRef<Record<string, { demo?: string; cover?: string }>>({})
+  const highlightPinsRef = useRef<Record<string, { highlight?: string; cover?: string }>>({})
 
   const [tasks, setTasks] = useState<StudioTask[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
@@ -737,7 +752,9 @@ export function StudioPage() {
   /** 示范产出：缩略图用 cover，预览用 demo；与 clipPinsRef 同步的钉住行 */
   const [clipMeta, setClipMeta] = useState<Record<string, { demo?: string; cover?: string }>>({})
   const [clipPins, setClipPins] = useState<Record<string, { demo?: string; cover?: string }>>({})
+  const [highlightPins, setHighlightPins] = useState<Record<string, { highlight?: string; cover?: string }>>({})
   const [demoPickOpen, setDemoPickOpen] = useState(false)
+  const [highlightPickOpen, setHighlightPickOpen] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   const [planInfoOpen, setPlanInfoOpen] = useState(false)
   const [activeBlockIdx, setActiveBlockIdx] = useState(-1)
@@ -784,6 +801,10 @@ export function StudioPage() {
     clipPinsRef.current = clipPins
   }, [clipPins])
 
+  useEffect(() => {
+    highlightPinsRef.current = highlightPins
+  }, [highlightPins])
+
   /** 视频已能播但 React duration 被清成 0 时（同 src 不重挂载、loadedmetadata 不再触发）把总长捞回来 */
   function syncDurationFromVideo(el: HTMLVideoElement | null | undefined) {
     const d = el?.duration
@@ -816,7 +837,9 @@ export function StudioPage() {
     clipPinsRef.current = {}
     setClipPins({})
     setClipMeta(clipMetaFromDraft(nextDraft))
-    setGifItems([])
+    const hlMeta = highlightMetaFromDraft(nextDraft)
+    highlightPinsRef.current = hlMeta
+    setHighlightPins(hlMeta)
     setBindFilter('')
     setBindHits([])
     setBindPickerOpen(false)
@@ -941,6 +964,16 @@ export function StudioPage() {
     return () => window.clearTimeout(t)
   }, [demoPickOpen, activeRowId])
 
+  useEffect(() => {
+    if (!highlightPickOpen || !activeRowId) return
+    const t = window.setTimeout(() => {
+      document
+        .querySelector<HTMLElement>(`[data-highlight-pick-id="${activeRowId}"]`)
+        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }, 40)
+    return () => window.clearTimeout(t)
+  }, [highlightPickOpen, activeRowId])
+
   const suspectCount = useMemo(() => rows.filter((r) => Boolean(r.ex.suspect)).length, [rows])
   const blockRows = useMemo(
     () => (activeBlockIdx < 0 ? rows : rows.filter((r) => r.block === activeBlockIdx)),
@@ -1005,7 +1038,6 @@ export function StudioPage() {
     task && workbench && status === 'done' && segments.length === 0,
   )
   const showSubBanner = missingSub && !(task && skipSubtitle[task.id])
-  const activeRow = rows.find((r) => r.ex.id === activeRowId) || null
   const amberCount = useMemo(() => rows.filter((r) => trafficOf(r.ex) === 'amber').length, [rows])
   const redCount = useMemo(() => rows.filter((r) => trafficOf(r.ex) === 'red').length, [rows])
   const bars = useMemo(() => fauxBars(task?.id || 1), [task?.id])
@@ -1046,8 +1078,28 @@ export function StudioPage() {
         rowId: r.ex.id,
       })
     }
+  for (const r of rows) {
+    if (!r.ex.highlight_url && !r.ex.attach_highlight) continue
+    const hs = r.ex.highlight_snippet
+    const start = Number(hs?.start ?? r.ex.snippet?.start ?? 0)
+    const end = Number(hs?.end ?? r.ex.snippet?.end ?? start)
+    const pin = highlightPins[r.ex.id]
+    const draftCover = mediaSrc(r.ex.highlight_cover_url || null) || undefined
+    const cover = pin?.cover || draftCover
+    const fromSession = Boolean(pin?.highlight || pin?.cover || r.ex.highlight_url)
+    items.push({
+      id: `highlight-${r.ex.id}`,
+      kind: 'highlight',
+      label: r.ex.spoken_name || r.ex.exercise_name || `教学 ${r.n}`,
+      start,
+      end,
+      url: cover,
+      fromSession,
+      rowId: r.ex.id,
+    })
+  }
     return items
-  }, [draft.cover_url, rows, clipMeta, clipPins])
+  }, [draft.cover_url, rows, clipMeta, clipPins, highlightPins])
 
   const anchors = useMemo(
     () =>
@@ -1146,7 +1198,12 @@ export function StudioPage() {
       return
     }
     if (!item.rowId) return
-    const label = item.label || '该示范'
+    const label = item.label || (item.kind === 'highlight' ? '该教学' : '该示范')
+    if (item.kind === 'highlight') {
+      if (!window.confirm(`清除「${label}」的教学视频切片？只改本任务草稿。`)) return
+      clearRowHighlight(item.rowId)
+      return
+    }
     if (!window.confirm(`清除「${label}」的示范切片？只改本任务草稿。`)) return
     clearRowDemo(item.rowId)
   }
@@ -1636,6 +1693,148 @@ export function StudioPage() {
     )
   }
 
+  function assertHighlightDuration(range: { start: number; end: number } | null = sel): boolean {
+    const dur = selDurationSec(range)
+    if (dur < HIGHLIGHT_MIN_SEC) {
+      toast.err(`教学视频太短：至少 ${HIGHLIGHT_MIN_SEC} 秒（现在 ${dur.toFixed(1)}s）`)
+      return false
+    }
+    if (dur > HIGHLIGHT_MAX_SEC) {
+      toast.err(`教学视频太长：最多 ${HIGHLIGHT_MAX_SEC} 秒，请缩短选区（现在 ${dur.toFixed(1)}s）`)
+      return false
+    }
+    return true
+  }
+
+  function defaultHighlightSelFor(ex: StudioExerciseDraft): { start: number; end: number } | null {
+    const evidenceStart =
+      ex.evidence?.start != null && Number.isFinite(Number(ex.evidence.start))
+        ? Number(ex.evidence.start)
+        : undefined
+    const at = anchorOf(ex) ?? evidenceStart
+    if (at === undefined) return null
+    const start = Math.max(0, at - 0.2)
+    const ordered = [...anchors].sort((a, b) => a.at - b.at)
+    const idx = ordered.findIndex(({ r }) => r.ex.id === ex.id)
+    let end = start + HIGHLIGHT_DEFAULT_CAP
+    if (idx >= 0 && idx < ordered.length - 1) {
+      end = Math.min(end, ordered[idx + 1].at - 0.15)
+    }
+    if (duration > 0) end = Math.min(end, duration)
+    end = Math.max(start + HIGHLIGHT_MIN_SEC, end)
+    if (duration > 0 && end > duration) {
+      end = duration
+      if (end - start < HIGHLIGHT_MIN_SEC) return null
+    }
+    if (end - start > HIGHLIGHT_DEFAULT_CAP) end = start + HIGHLIGHT_DEFAULT_CAP
+    if (end - start < HIGHLIGHT_MIN_SEC) return null
+    return { start, end }
+  }
+
+  /** 教学选区：示范长度过短时先按锚点拉长，再校验上下限 */
+  function ensureHighlightSel(): { start: number; end: number } | null {
+    let range = sel
+    const dur = range ? selDurationSec(range) : 0
+  if (!range || dur < HIGHLIGHT_MIN_SEC) {
+    const prefer =
+        rows.find((r) => r.ex.id === activeRowId) || rows.find((r) => anchorOf(r.ex) != null) || rows[0]
+      if (!prefer) {
+        if (!range) toast.err('先在波形上拖一段选区，或点动作锚点')
+        return null
+      }
+      const next = defaultHighlightSelFor(prefer.ex)
+      if (!next) {
+        if (!range) toast.err('需要动作锚点才能默认拉长教学选区')
+        return null
+      }
+      range = next
+      setSel(next)
+      lockZoomAround(next)
+      seekTo(next.start)
+    }
+    if (!assertHighlightDuration(range)) return null
+    return range
+  }
+
+  function openHighlightPick() {
+    if (!rows.length) {
+      toast.err('还没有动作清单')
+      return
+    }
+    if (!ensureHighlightSel()) return
+    setHighlightPickOpen(true)
+  }
+
+  function highlightRowLibState(ex: StudioExerciseDraft): {
+    kind: 'unbound' | 'stale' | 'bound'
+    skuName?: string
+    hasHighlight?: boolean
+  } {
+    if (!ex.exercise_id) {
+      return ex.sku_missing
+        ? { kind: 'stale', skuName: ex.exercise_name || undefined }
+        : { kind: 'unbound' }
+    }
+    const hit = (ex.candidates || []).find((c) => String(c.id) === String(ex.exercise_id))
+    const known = skuHasHighlight(hit)
+    const hasHighlight = known
+    return {
+      kind: 'bound',
+      skuName: ex.exercise_name || `ID ${ex.exercise_id}`,
+      hasHighlight: hasHighlight === true ? true : hasHighlight === false ? false : undefined,
+    }
+  }
+
+  async function attachHighlightToRow(r: Row, writeToLibrary: boolean) {
+    const range = ensureHighlightSel()
+    if (!range) return
+    const lib = highlightRowLibState(r.ex)
+    const toLibrary = Boolean(isExerciseOnly || writeToLibrary)
+    if (toLibrary && !isExerciseOnly) {
+      if (lib.kind === 'stale') {
+        toast.err('原绑定已失效，请在清单重新绑到库里的动作')
+        return
+      }
+      if (lib.kind === 'unbound') {
+        toast.err('还没对应库动作。先绑已有 SKU，或到详情新建，再写入库')
+        return
+      }
+    }
+    setHighlightPickOpen(false)
+    setActiveRowId(r.ex.id)
+    await onAttachHighlightNow(
+      {
+        ...r.ex,
+        highlight_snippet: { start: range.start, end: range.end },
+        attach_highlight: true,
+      },
+      { writeToLibrary: toLibrary, skuHasHighlight: lib.kind === 'bound' ? lib.hasHighlight : undefined },
+    )
+  }
+
+  function clearRowHighlight(rowId: string, opts?: { quiet?: boolean }) {
+    const row = rows.find((r) => r.ex.id === rowId)?.ex
+    if (!row) return
+    patchExercise(rowId, {
+      highlight_url: null,
+      highlight_cover_url: null,
+      highlight_snippet: null,
+      attach_highlight: false,
+      write_highlight_library: false,
+    })
+    highlightPinsRef.current = { ...highlightPinsRef.current }
+    delete highlightPinsRef.current[rowId]
+    setHighlightPins((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+    if (!opts?.quiet) {
+      const label = row.spoken_name || row.exercise_name || '该动作'
+      toast.ok(`已清除「${label}」教学视频，记得存草稿`)
+    }
+  }
+
   async function onSetPlanCover() {
     if (activeId == null || !sel) {
       toast.err('先在波形上拖一段选区')
@@ -1932,7 +2131,7 @@ export function StudioPage() {
       patchExercise(ex.id, patch)
       setBindPickerOpen(false)
       toast.ok(res.created ? `已派生 · ${female.name_zh}` : `已关联 · ${female.name_zh}`)
-      void refetch()
+      void reloadList()
       return patch
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '派生女版失败')
@@ -2010,6 +2209,16 @@ export function StudioPage() {
       if (end > start) return { start, end }
     }
     return null
+  }
+
+  function clipHighlightRangeFor(ex: StudioExerciseDraft): { start: number; end: number } | null {
+    if (sel && sel.end - sel.start >= HIGHLIGHT_MIN_SEC - 0.01) return sel
+    if (ex.highlight_snippet?.start != null && ex.highlight_snippet?.end != null) {
+      const start = Number(ex.highlight_snippet.start)
+      const end = Number(ex.highlight_snippet.end)
+      if (end > start) return { start, end }
+    }
+    return ensureHighlightSel()
   }
 
   async function onAttachDemoNow(
@@ -2098,6 +2307,90 @@ export function StudioPage() {
       )
     } catch (err: unknown) {
       toast.err(err instanceof Error ? err.message : '写入示范失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onAttachHighlightNow(
+    ex: StudioExerciseDraft,
+    opts?: { writeToLibrary?: boolean; skuHasHighlight?: boolean },
+  ) {
+    if (activeId == null) return
+    const writeToLibrary = opts?.writeToLibrary ?? isExerciseOnly
+    let exerciseId = ex.exercise_id
+    if (!exerciseId) {
+      if (!isExerciseOnly) {
+        toast.err(
+          writeToLibrary
+            ? '写入动作库前请先绑已有动作，或到详情新建'
+            : '请先对应到库里的动作（或新建），再切教学视频',
+        )
+        return
+      }
+      const created = await onQuickCreate({ ...ex, media_status: 'uncut' })
+      exerciseId = created?.exercise_id || null
+      if (!exerciseId) return
+    }
+    if (!exerciseId && ex.sku_missing) {
+      toast.err('原绑定已失效，请重新绑库后再切教学视频')
+      return
+    }
+    const range = clipHighlightRangeFor(ex)
+    if (!range) {
+      toast.err(`请先拖出 ${HIGHLIGHT_MIN_SEC}～${HIGHLIGHT_MAX_SEC} 秒选区`)
+      return
+    }
+    if (!assertHighlightDuration(range)) return
+    if (writeToLibrary) {
+      const label = ex.exercise_name || ex.spoken_name || '该动作'
+      const hasHighlight = opts?.skuHasHighlight
+      const ok = window.confirm(
+        hasHighlight === true
+          ? `「${label}」动作库已有教学视频，用这段替换？`
+          : hasHighlight === false
+            ? `「${label}」库里还没有教学视频，把这段补进去？`
+            : `把「${label}」的教学视频写入动作库 highlight_video？若已有会被盖掉。`,
+      )
+      if (!ok) return
+    }
+    setBusy(true)
+    try {
+      const res = await attachStudioHighlight({
+        task_id: activeId,
+        exercise_id: exerciseId,
+        start: range.start,
+        end: range.end,
+        row_id: ex.id,
+        write_to_library: writeToLibrary,
+      })
+      const highlightUrl = mediaSrc(res.highlight?.highlight_url || null) || undefined
+      const coverUrl = mediaSrc(res.highlight?.cover_url || null) || undefined
+      if (!highlightUrl && !coverUrl) {
+        throw new Error('切片成功但没返回文件地址，请检查 ffmpeg / 存储')
+      }
+      const pin = { highlight: highlightUrl, cover: coverUrl }
+      const patch: Partial<StudioExerciseDraft> = {
+        exercise_id: exerciseId,
+        attach_highlight: true,
+        write_highlight_library: writeToLibrary,
+        highlight_url: res.highlight?.highlight_url || null,
+        highlight_cover_url: res.highlight?.cover_url || null,
+        highlight_snippet: { start: range.start, end: range.end },
+      }
+      const patched = mapRows(draftRef.current, ex.id, patch)
+      setDraft(patched)
+      highlightPinsRef.current = { ...highlightPinsRef.current, [ex.id]: pin }
+      setHighlightPins((p) => ({ ...p, [ex.id]: pin }))
+      if (highlightUrl) setPreviewUrl(`${highlightUrl}${highlightUrl.includes('?') ? '&' : '?'}v=${Date.now()}`)
+      await onSaveDraft(patched, true)
+      toast.ok(
+        writeToLibrary
+          ? `「${ex.spoken_name || ex.exercise_name || '该动作'}」教学视频已写入动作库`
+          : `「${ex.spoken_name || ex.exercise_name || '该动作'}」教学视频已挂到本计划`,
+      )
+    } catch (err: unknown) {
+      toast.err(err instanceof Error ? err.message : '写入教学视频失败')
     } finally {
       setBusy(false)
     }
@@ -2438,7 +2731,7 @@ export function StudioPage() {
       }
     }
     if (appendMode === 'compose' && publish) {
-      lines.push(`将与另外 ${mergeIds.length} 条一起定稿，合成一套《${draft.plan_title.trim()}》。`)
+      lines.push(`将与另外 ${mergeIds.length} 条一起定稿，合成一套《${(draft.plan_title || '').trim()}》。`)
       const uncutBits: string[] = []
       const selfUncut = rows.filter((r) => !exerciseHasPlanDemo(r.ex)).length
       if (selfUncut) uncutBits.push(`当前 ${selfUncut} 个未切`)
@@ -2948,7 +3241,16 @@ export function StudioPage() {
               disabled={!sel || busy}
               onClick={() => openDemoPick()}
             >
-              做成示范视频
+              做成示范
+            </button>
+            <button
+              type="button"
+              className="btn sm sel-secondary"
+              disabled={busy}
+              onClick={() => openHighlightPick()}
+              title={`带声教学 ${HIGHLIGHT_MIN_SEC}～${HIGHLIGHT_MAX_SEC}s；选区过短会按锚点自动拉长`}
+            >
+              做成教学视频
             </button>
             {!isExerciseOnly ? (
             <button
@@ -2984,29 +3286,55 @@ export function StudioPage() {
                     {item.url ? (
                       <img src={item.url} alt="" />
                     ) : (
-                      <span className="produced-ico">{item.kind === 'cover' ? '封面' : '示范'}</span>
+                      <span className="produced-ico">
+                        {item.kind === 'cover' ? '封面' : item.kind === 'highlight' ? '教学' : '示范'}
+                      </span>
                     )}
                     <em>
                       {item.kind === 'cover'
                         ? '计划封面'
-                        : `${
-                            item.fromSession
-                              ? isExerciseOnly
-                                ? '本次 · '
-                                : '本计划 · '
-                              : '库内 · '
-                          }${item.label}${
-                            item.start != null && item.end != null
-                              ? ` · ${(item.end - item.start).toFixed(0)}s`
-                              : ''
-                          }`}
+                        : item.kind === 'highlight'
+                          ? `${
+                              item.fromSession
+                                ? isExerciseOnly
+                                  ? '本次教学 · '
+                                  : '本计划教学 · '
+                                : '库内教学 · '
+                            }${item.label}${
+                              item.start != null && item.end != null
+                                ? ` · ${(item.end - item.start).toFixed(0)}s`
+                                : ''
+                            }`
+                          : `${
+                              item.fromSession
+                                ? isExerciseOnly
+                                  ? '本次 · '
+                                  : '本计划 · '
+                                : '库内 · '
+                            }${item.label}${
+                              item.start != null && item.end != null
+                                ? ` · ${(item.end - item.start).toFixed(0)}s`
+                                : ''
+                            }`}
                     </em>
                   </button>
                   <button
                     type="button"
                     className="produced-chip-del"
-                    title={item.kind === 'cover' ? '清除计划封面' : '清除此示范'}
-                    aria-label={item.kind === 'cover' ? '清除计划封面' : `清除 ${item.label}`}
+                    title={
+                      item.kind === 'cover'
+                        ? '清除计划封面'
+                        : item.kind === 'highlight'
+                          ? '清除此教学视频'
+                          : '清除此示范'
+                    }
+                    aria-label={
+                      item.kind === 'cover'
+                        ? '清除计划封面'
+                        : item.kind === 'highlight'
+                          ? `清除 ${item.label} 教学`
+                          : `清除 ${item.label}`
+                    }
                     onClick={(e) => {
                       e.stopPropagation()
                       clearProducedItem(item)
@@ -3124,7 +3452,6 @@ export function StudioPage() {
               src={playSrc || undefined}
               controls
               muted
-              defaultMuted
               playsInline
               onLoadedMetadata={(e) => {
                 e.currentTarget.muted = true
@@ -3885,136 +4212,6 @@ export function StudioPage() {
     )
   }
 
-  /* ── 动作详情 (05) ── */
-
-  function renderActionCard(r: Row) {
-    const ex = r.ex
-    const t = trafficOf(ex)
-    const at = anchorOf(ex)
-    const statusText = t === 'red' ? '库外' : t === 'amber' ? '待候选' : '已绑'
-    const ev = evidencePreview(ex)
-    return (
-      <div className="action-card" role="region" aria-label="动作卡 · 只绑定">
-        <div className="action-card-head">
-          <span className={`dot ${t}`} />
-          <strong>
-            No.{r.n}{' '}
-            <input
-              className="action-card-name"
-              value={ex.spoken_name || ex.exercise_name || ''}
-              onChange={(e) => {
-                const name = e.target.value
-                patchExercise(ex.id, {
-                  spoken_name: name,
-                  ...(ex.exercise_id ? {} : { exercise_name: name }),
-                })
-              }}
-              aria-label="口播名"
-            />
-          </strong>
-          <span className={`tag ${t === 'green' ? 'ok' : t === 'amber' ? 'amber' : 'red'}`}>{statusText}</span>
-          {ex.suspect ? (
-            <span className="tag warn" title={suspectReasonText(ex.suspect_reason)}>
-              ⚠ {suspectBadgeShort(ex.suspect_reason)}
-            </span>
-          ) : null}
-          {at !== undefined ? <span className="muted num">{fmtAnchor(at)}</span> : null}
-          <button type="button" className="link" onClick={() => setActiveRowId(null)}>
-            收起
-          </button>
-        </div>
-
-        {ev ? (
-          <p className="action-card-evidence muted" title={ev}>
-            {at !== undefined ? <span className="num">[{fmtAnchor(at)}] </span> : null}
-            {ev}
-          </p>
-        ) : null}
-
-        <div className="action-card-meta">
-          <label>
-            组
-            <input
-              className="num"
-              type="number"
-              min={1}
-              value={ex.target_sets ?? ''}
-              onChange={(e) =>
-                patchExercise(ex.id, {
-                  target_sets: e.target.value === '' ? null : Number(e.target.value) || null,
-                  sets_from_transcript: true,
-                })
-              }
-            />
-          </label>
-          <label>
-            次
-            <input
-              className="num"
-              value={ex.target_reps || ''}
-              onChange={(e) =>
-                patchExercise(ex.id, { target_reps: e.target.value, sets_from_transcript: true })
-              }
-            />
-          </label>
-          <select
-            value={ex.target_muscle || '全身'}
-            onChange={(e) => patchExercise(ex.id, { target_muscle: e.target.value })}
-            aria-label="部位"
-          >
-            {['全身', ...TARGET_MUSCLES].map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-          <span className="muted">
-            {roleLabel(ex.role)}
-            {ex.gear ? ` · ${ex.gear}` : ''}
-          </span>
-        </div>
-
-        {renderBindBlock(ex)}
-
-        <div className="action-card-foot">
-          <button
-            type="button"
-            className="btn"
-            disabled={!ex.exercise_id || busy}
-            onClick={() => void openCueDrawer(ex)}
-          >
-            详情
-          </button>
-          {!isExerciseOnly && ex.media_status === 'clipped' && !ex.write_library ? (
-            <button
-              type="button"
-              className="btn sm"
-              disabled={!ex.exercise_id || busy}
-              title="可选：把本计划示范同步进动作库（会盖 SKU）"
-              onClick={() => {
-                const lib = demoRowLibState(ex)
-                void onAttachDemoNow(ex, {
-                  writeToLibrary: true,
-                  skuHasDemo: lib.kind === 'bound' ? lib.hasDemo : undefined,
-                })
-              }}
-            >
-              写入动作库
-            </button>
-          ) : null}
-          {!isExerciseOnly && ex.write_library ? (
-            <span className="muted" style={{ fontSize: 12 }}>
-              已标记写入库
-            </span>
-          ) : null}
-          <button type="button" className="btn danger sm" onClick={() => removeExerciseRow(ex.id)}>
-            删除本行
-          </button>
-        </div>
-      </div>
-    )
-  }
-
   function renderCueDrawer() {
     if (!cueDrawerRowId) return null
     const r = rows.find((x) => x.ex.id === cueDrawerRowId)
@@ -4331,7 +4528,7 @@ export function StudioPage() {
         <div className="modal">
           <div className="modal-head">
             <div>
-              <h2>做成示范视频</h2>
+              <h2>做成示范</h2>
               <p className="muted">
                 {fmtPrecise(sel.start)} → {fmtPrecise(sel.end)} · {(sel.end - sel.start).toFixed(1)}s
                 （限 {DEMO_MIN_SEC}～{DEMO_MAX_SEC} 秒）·{' '}
@@ -4414,6 +4611,116 @@ export function StudioPage() {
                             : lib.hasDemo === true
                               ? '替换库示范'
                               : '补进库'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      </div>
+    )
+  }
+
+  function renderHighlightPickModal() {
+    if (!sel) return null
+    const range = sel
+    const list = visibleRows.length ? visibleRows : rows
+    const ordered = [...list].sort((a, b) => {
+      if (a.ex.id === activeRowId) return -1
+      if (b.ex.id === activeRowId) return 1
+      return 0
+    })
+    return (
+      <div className="modal-mask" role="dialog" aria-modal="true" aria-label="选择教学视频挂到哪条动作">
+        <div className="modal">
+          <div className="modal-head">
+            <div>
+              <h2>做成教学视频</h2>
+              <p className="muted">
+                {fmtPrecise(range.start)} → {fmtPrecise(range.end)} · {(range.end - range.start).toFixed(1)}s
+                （限 {HIGHLIGHT_MIN_SEC}～{HIGHLIGHT_MAX_SEC} 秒，默认最长 {HIGHLIGHT_DEFAULT_CAP}s）·{' '}
+                {isExerciseOnly
+                  ? '动作素材模式：默认写入对应库动作'
+                  : '已绑库可挂本计划或写入库；未绑/失效先去对应'}
+              </p>
+            </div>
+            <button type="button" className="link" onClick={() => setHighlightPickOpen(false)} aria-label="关闭">
+              ✕
+            </button>
+          </div>
+          <ul className="demo-pick-list">
+            {ordered.map((r) => {
+              const name = r.ex.spoken_name || r.ex.exercise_name || `动作 ${r.n}`
+              const lib = highlightRowLibState(r.ex)
+              const preferred = r.ex.id === activeRowId
+              const statusEm =
+                lib.kind === 'stale'
+                  ? `绑库失效 · ${lib.skuName || '请重绑'}`
+                  : lib.kind === 'unbound'
+                    ? '未对应库动作'
+                    : lib.hasHighlight === true
+                      ? `库有 · ${lib.skuName} · 已有教学`
+                      : lib.hasHighlight === false
+                        ? `库有 · ${lib.skuName} · 尚无教学`
+                        : `库有 · ${lib.skuName}`
+              const canWriteLib = isExerciseOnly || lib.kind === 'bound'
+              return (
+                <li key={r.ex.id} className={`demo-pick-row${preferred ? ' prefer' : ''}`}>
+                  <div className="demo-pick-main" data-highlight-pick-id={r.ex.id}>
+                    <span className="demo-pick-n num">{r.n}</span>
+                    <span className="demo-pick-body">
+                      <strong>{name}</strong>
+                      <em>{statusEm}</em>
+                    </span>
+                  </div>
+                  <div className="demo-pick-actions">
+                    {isExerciseOnly ? (
+                      <button
+                        type="button"
+                        className="btn sm accent-fill"
+                        disabled={busy || lib.kind === 'stale'}
+                        onClick={() => void attachHighlightToRow(r, true)}
+                      >
+                        写入库
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          disabled={busy || lib.kind === 'stale' || lib.kind === 'unbound'}
+                          title={
+                            lib.kind === 'bound'
+                              ? '只挂本计划，不改动作库'
+                              : '先对应库动作后再切'
+                          }
+                          onClick={() => void attachHighlightToRow(r, false)}
+                        >
+                          挂草稿
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm accent-fill"
+                          disabled={busy || !canWriteLib}
+                          title={
+                            lib.kind === 'stale'
+                              ? '原绑定已失效，请重绑'
+                              : lib.kind === 'unbound'
+                                ? '库里没有对应：先绑已有或详情新建'
+                                : lib.hasHighlight === true
+                                  ? '替换该 SKU 现有教学视频'
+                                  : '补进动作库 highlight_video'
+                          }
+                          onClick={() => void attachHighlightToRow(r, true)}
+                        >
+                          {lib.kind === 'unbound' || lib.kind === 'stale'
+                            ? '需先绑库'
+                            : lib.hasHighlight === true
+                              ? '替换库教学'
+                              : '写入库'}
                         </button>
                       </>
                     )}
@@ -4710,7 +5017,8 @@ export function StudioPage() {
     clipPinsRef.current = {}
     setClipPins({})
     setClipMeta({})
-    setGifItems([])
+    highlightPinsRef.current = {}
+    setHighlightPins({})
     setBindFilter('')
     setBindHits([])
     setBindPickerOpen(false)
@@ -4802,6 +5110,7 @@ export function StudioPage() {
       {showIngest ? renderIngestModal() : null}
       {showRelink ? renderRelinkModal() : null}
       {demoPickOpen ? renderDemoPickModal() : null}
+      {highlightPickOpen ? renderHighlightPickModal() : null}
       {renderCueDrawer()}
     </div>
   )
